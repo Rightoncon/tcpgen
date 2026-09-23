@@ -146,14 +146,31 @@ class Centerline:
 
     def station_of_nearest(self, lat: float, lng: float) -> float:
         """Station in feet of the point on the centerline nearest to (lat, lng)."""
+        station_m, _offset_m = self._nearest(lat, lng)
+        return station_m * FT_PER_M
+
+    def station_and_offset_of_nearest(self, lat: float, lng: float) -> tuple[float, float]:
+        """(station_ft, offset_ft) of the point on the centerline nearest
+        to (lat, lng). `offset_ft` uses the same +right-of-travel sign
+        convention as `offset_point` — this is effectively its inverse,
+        and is what spec §5A.4's frontage/work-side math needs (a parcel
+        vertex's position relative to the road, not just its station)."""
+        station_m, offset_m = self._nearest(lat, lng)
+        return station_m * FT_PER_M, offset_m * FT_PER_M
+
+    def _nearest(self, lat: float, lng: float) -> tuple[float, float]:
+        """(station_m, signed_offset_m) of the point on the centerline
+        nearest to (lat, lng), both in meters."""
         ((px, py),) = to_utm([(lat, lng)], self.crs)
         best_station_m = 0.0
+        best_offset_m = 0.0
         best_dist2 = math.inf
         for i in range(len(self._points_m) - 1):
             x0, y0 = self._points_m[i]
             x1, y1 = self._points_m[i + 1]
             dx, dy = x1 - x0, y1 - y0
             seg_len2 = dx * dx + dy * dy
+            seg_len = math.sqrt(seg_len2)
             if seg_len2 == 0:
                 t = 0.0
             else:
@@ -163,5 +180,13 @@ class Centerline:
             dist2 = (px - cx) ** 2 + (py - cy) ** 2
             if dist2 < best_dist2:
                 best_dist2 = dist2
-                best_station_m = self._cum_m[i] + t * math.hypot(dx, dy)
-        return best_station_m * FT_PER_M
+                best_station_m = self._cum_m[i] + t * seg_len
+                if seg_len2 == 0:
+                    best_offset_m = 0.0
+                else:
+                    vx, vy = px - cx, py - cy
+                    # signed distance via the same right-hand normal
+                    # (dy, -dx)/seg_len used by offset_point, so the two
+                    # methods agree on what "positive" means.
+                    best_offset_m = (vx * dy - vy * dx) / seg_len
+        return best_station_m, best_offset_m

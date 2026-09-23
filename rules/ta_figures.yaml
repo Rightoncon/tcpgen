@@ -1,0 +1,34 @@
+# Typical applications (spec §6.3). Phase 2 builds 6H-2 and 6H-10 only —
+# 6H-3 (shoulder), the pedestrian-only figures, and a real full_closure
+# figure all come later. Where a certified example (rules/certified/,
+# Phase 5) disagrees with this file, the example wins and this file gets
+# corrected — see spec §6.4 and §9.
+
+"6H-2":
+  name: Work Beyond the Shoulder
+  flaggers: 0
+  lanes_closed: 0
+  signs_per_approach:
+    - {code: W20-1, text: "ROAD WORK AHEAD", station_multiplier: 2}
+    - {code: W21-5, text: "SHOULDER WORK", station_multiplier: 1}
+  end_sign: true
+  end_sign_code: "G20-2"
+  end_sign_text: "END ROAD WORK"
+  devices:
+    type: cone
+    placement: work_area_perimeter
+
+"6H-10":
+  name: Lane Closure on a Two-Lane Road Using Flaggers
+  flaggers: 2
+  lanes_closed: 1
+  signs_per_approach:
+    - {code: W20-1, text: "ROAD WORK AHEAD", station_multiplier: 3}
+    - {code: W20-4, text: "ONE LANE ROAD AHEAD", station_multiplier: 2}
+    - {code: W20-7a, text: "FLAGGER AHEAD", station_multiplier: 1}
+  end_sign: true
+  end_sign_code: "G20-2"
+  end_sign_text: "END ROAD WORK"
+  devices:
+    type: cone
+    placement: merging_taper_and_tangent
