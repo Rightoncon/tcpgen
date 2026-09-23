@@ -2,26 +2,30 @@
 a close-up and a wide area, both built from the same real device geometry
 (spec §1.1 — never a screenshot).
 
-No basemap raster yet: config.MAPBOX_TOKEN isn't set (see config.py), so
-the road is drawn as a real vector line from its actual OSM coordinates
-rather than composited onto a fetched satellite/street tile. Same pixel
-projection (`core.geometry.latlng_to_pixel`) either way, so wiring in a
-real raster later is additive — swap a background image in under
-`_draw_map`'s current drawing, don't rewrite the layout math.
+The road/work-zone/device overlay is always drawn as vector graphics from
+real computed geometry. Underneath it, `_draw_map` composites a fetched
+Mapbox Static Images raster when config.MAPBOX_TOKEN is set (core/
+basemap.py); if it's missing or the fetch fails, that's non-fatal — the
+sheet still renders on the plain background, just without real-world
+context. Same pixel projection (`core.geometry.latlng_to_pixel`) drives
+both the raster placement and the vector overlay, so they line up.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import io
 import math
 import os
 from typing import Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from config import CONTRACTOR_NAME, CSLB_NUMBER
+from config import CONTRACTOR_NAME, CSLB_NUMBER, MAPBOX_TOKEN
+from core.basemap import BasemapUnavailableError, fetch_basemap_png
 from core.geometry import Centerline, choose_zoom, latlng_to_pixel, to_wgs84
 from core.geocode import GeocodeResult
 from core.layout import Device, WorkArea
@@ -289,14 +293,25 @@ def _draw_map(
 ) -> None:
     c.setFillColor(colors.HexColor("#eef1f5"))
     c.rect(x, y, w, h, fill=1, stroke=0)
-    c.setStrokeColor(colors.HexColor("#cbd5e1"))
-    c.setLineWidth(1)
-    c.rect(x, y, w, h, fill=0, stroke=1)
 
     device_points = [(d.lat, d.lng) for d in devices]
     center_lat = sum(p[0] for p in device_points) / len(device_points)
     center_lng = sum(p[1] for p in device_points) / len(device_points)
     scale = 2
+
+    # Real satellite/street imagery underneath the vector overlay, when a
+    # basemap token is configured. Non-fatal if it isn't, or if the fetch
+    # fails — the sheet still renders, just without real-world context
+    # (spec §1.2's fallback philosophy, applied here too).
+    try:
+        png_bytes = fetch_basemap_png(center_lat, center_lng, zoom, int(round(w)), int(round(h)), scale=scale)
+        c.drawImage(ImageReader(io.BytesIO(png_bytes)), x, y, width=w, height=h, preserveAspectRatio=False, mask="auto")
+    except BasemapUnavailableError:
+        pass
+
+    c.setStrokeColor(colors.HexColor("#cbd5e1"))
+    c.setLineWidth(1)
+    c.rect(x, y, w, h, fill=0, stroke=1)
 
     def to_page(lat: float, lng: float) -> tuple[float, float]:
         px, py = latlng_to_pixel(lat, lng, center_lat, center_lng, zoom, w, h, scale)
@@ -305,10 +320,12 @@ def _draw_map(
         # "retina" (2x) pixels per spec §7.5's own signature.
         return x + px / scale, y + h - py / scale
 
-    # Road centerline — real OSM geometry, drawn as a vector line (spec
-    # §1.1: the map is never the source of truth, but here it's also the
-    # only rendering we have without a raster basemap token configured).
-    c.setStrokeColor(colors.HexColor("#9ca3af"))
+    # Road centerline — real OSM geometry, drawn as a vector line on top of
+    # whatever's underneath (spec §1.1: the map is never the source of
+    # truth for geometry, only a background — this line is the actual
+    # computed centerline, shown as a cross-check against the basemap's
+    # own rendering of the road).
+    c.setStrokeColor(colors.HexColor("#f8fafc") if MAPBOX_TOKEN else colors.HexColor("#9ca3af"))
     c.setLineWidth(1.5)
     path = c.beginPath()
     for i, (lat, lng) in enumerate(road.coords):
