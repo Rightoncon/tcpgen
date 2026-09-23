@@ -105,6 +105,8 @@ def _device_fill_and_border(d: Device) -> tuple[colors.Color, colors.Color]:
         return FLAGGER_COLOR, FLAGGER_COLOR
     if d.kind == "cone":
         return WORK_ZONE, WORK_ZONE
+    if d.kind == "barricade":
+        return colors.white, REG_BORDER
     if d.code and d.code.startswith("R9"):
         return colors.white, REG_BORDER
     return WARN_FILL, WARN_BORDER
@@ -152,6 +154,7 @@ _LEGEND_ITEMS = (
     ("Warning sign", WARN_FILL, WARN_BORDER),
     ("Regulatory sign", colors.white, REG_BORDER),
     ("Flagger", FLAGGER_COLOR, FLAGGER_COLOR),
+    ("Barricade", colors.white, REG_BORDER),
 )
 
 
@@ -230,12 +233,13 @@ def _draw_info_panel(
                 cursor_y -= 8
             cursor_y -= 2
 
-    # _draw_legend anchors its header 12pt above `y` and stacks 4 rows at
-    # 10pt each below that — needs ~52pt of headroom above the panel's own
-    # bottom edge (`y`) or the bottom rows land in the footer band and get
-    # painted over. Found by actually rendering a sheet and looking at it,
-    # not by inspection — see test_render_pdf.py for the regression.
-    _draw_legend(c, text_x, y + 44)
+    # _draw_legend anchors its header 12pt above `y` and stacks len(_LEGEND_ITEMS)
+    # rows at 10pt each below that — needs ~10pt per row + 12pt header + a
+    # few pt of margin above the panel's own bottom edge (`y`) or the
+    # bottom rows land in the footer band and get painted over. Found by
+    # actually rendering a sheet and looking at it, not by inspection —
+    # see test_render_pdf.py for the regression.
+    _draw_legend(c, text_x, y + 14 + 10 * (len(_LEGEND_ITEMS) - 1))
 
 
 def _stack_labels(c: canvas.Canvas, x: float, y: float, w: float, targets: list[tuple]) -> None:
@@ -393,6 +397,16 @@ def _draw_map(
             c.setFillColor(colors.white)
             c.setFont("Helvetica-Bold", 5)
             c.drawCentredString(px, py - 1.8, "F")
+        elif d.kind == "barricade":
+            # Small white rail with diagonal orange stripes -- the classic
+            # Type I/II barricade look, distinct from a plain sign square.
+            w, h = 6.0, 2.2
+            c.rect(px - w / 2, py - h / 2, w, h, fill=1, stroke=1)
+            c.setStrokeColor(WORK_ZONE)
+            c.setLineWidth(1)
+            for i in range(3):
+                sx = px - w / 2 + (i + 0.5) * (w / 3)
+                c.line(sx - h / 2, py - h / 2, sx + h / 2, py + h / 2)
         else:  # sign
             size = 4
             c.rect(px - size / 2, py - size / 2, size, size, fill=1, stroke=1)

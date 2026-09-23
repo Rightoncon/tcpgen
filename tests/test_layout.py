@@ -155,6 +155,20 @@ def test_behind_curb_sidewalk_affected_adds_pedestrian_signs():
     assert codes.count("R9-9") == 2
     assert codes.count("R9-11") == 1
 
+    barricades = [d for d in devices if d.kind == "barricade"]
+    assert len(barricades) == 2  # one at each end of the closed run, spec §8.1 note 19
+    assert {round(d.station_ft) for d in barricades} == {round(wa.start_station_ft), round(wa.end_station_ft)}
+
+
+def test_no_sidewalk_no_barricades():
+    road = _road(width_ft=36, speed_mph=25)
+    cl = Centerline(road.coords)
+    wa = default_work_area(None, cl, road, Scope.BEHIND_CURB, (LONG_LINE[30][0], LONG_LINE[30][1]))
+    ta_figure = get_ta_figure(Scope.BEHIND_CURB, _figures())
+
+    devices, _warnings = build_device_plan(cl, road, wa, Scope.BEHIND_CURB, ta_figure, sidewalk_affected=False)
+    assert not any(d.kind == "barricade" for d in devices)
+
 
 # ---- build_device_plan: one_lane (TA-10) -----------------------------------
 

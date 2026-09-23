@@ -168,7 +168,15 @@ def _pedestrian_package(centerline, road, work_area, side, seq_start):
     """spec §6.2 pedestrian package. R9-11's "nearest crossing" placement
     needs real intersection data this phase doesn't have — placed at the
     work area's near edge as a stand-in. Replace once a phase adds
-    intersection detection."""
+    intersection detection.
+
+    Also places an ADA-compliant pedestrian barricade at each end of the
+    closed run — a real gap caught against a live reference plan (413
+    Alameda de las Pulgas, City Rise Safety, 2026-09-23): their own
+    General Note 19 is explicit that "ADA PEDESTRIAN BARRICADES ARE
+    REQUIRED AT THE POINT OF CLOSURE" whenever a sidewalk is closed,
+    which is exactly this flag — the device kind existed in the schema
+    from Phase 1 but nothing ever actually placed one."""
     devices = []
     seq = seq_start
     offset = side * (road.width_ft / 2 + 1)
@@ -189,6 +197,15 @@ def _pedestrian_package(centerline, road, work_area, side, seq_start):
             seq=seq,
         )
     )
+    seq += 1
+    for station in (work_area.start_station_ft, work_area.end_station_ft):
+        devices.append(
+            _place(
+                centerline, road.width_ft, station, offset, kind="barricade",
+                label="ADA Pedestrian Barricade", seq=seq,
+            )
+        )
+        seq += 1
     return devices
 
 
