@@ -13,7 +13,7 @@ from typing import Optional
 
 import requests
 
-from core.geometry import FT_PER_M, to_utm, utm_crs_for
+from core.geometry import FT_PER_M, to_utm, to_wgs84, utm_crs_for
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
@@ -207,6 +207,26 @@ def find_roads_near(lat: float, lng: float) -> list[RoadSegment]:
     )
 
 
+def find_roads_within(lat: float, lng: float, radius_m: int = SEARCH_RADII_M[-1]) -> list[RoadSegment]:
+    """A single, non-widening query at `radius_m` — unlike find_roads_near
+    (which stops at the *first* radius that returns anything, tuned for
+    picking the one road the job site sits on), this returns everything
+    named within the full radius. Needed for cross-street detection: the
+    job site's own road almost always already matches at 60m, so
+    find_roads_near would never widen out to where a cross street 200+ ft
+    away actually lives — confirmed live (157 San Marco Ave, San Bruno:
+    real nearby cross streets existed but never appeared as candidates
+    because the main-road search stopped at 60m). Returns [] on a network
+    failure rather than raising — a missing cross-street candidate list
+    should degrade to "no side-street signs," never break plan generation."""
+    try:
+        data = query_overpass(lat, lng, radius_m)
+    except requests.RequestException:
+        return []
+    elements = data.get("elements", [])
+    return [_road_from_element(el) for el in elements if el.get("geometry")]
+
+
 def _perpendicular_distance_m(lat: float, lng: float, coords: list[tuple[float, float]]) -> float:
     """Nearest distance in meters from (lat, lng) to the polyline `coords`."""
     crs = utm_crs_for(lat, lng)
@@ -246,3 +266,86 @@ def choose_road(
         return (dist, name_match, class_rank)
 
     return sorted(candidates, key=rank)[0]
+
+
+# ---- side-street signage (spec via reference plan, General Note 8) --------
+#
+# "PLACE W20-1 'ROAD WORK AHEAD' SIGNS ON ALL SIDE STREETS WITHIN THE
+# ADVANCE WARNING AREA" -- verbatim from a real production TCP (413 Alameda
+# de las Pulgas, City Rise Safety, 2026-09-23). Needs real intersection
+# geometry, not a guess: find every named road whose polyline actually
+# crosses the main centerline within the advance-warning window.
+
+
+def _segment_intersection(
+    p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float], p4: tuple[float, float]
+) -> Optional[tuple[float, float]]:
+    """2D intersection point of segment p1-p2 and segment p3-p4 (all in the
+    same planar CRS, e.g. UTM meters), or None if they don't cross. Treats
+    a shared endpoint as a valid crossing (t/u == 0 or 1 inclusive) since
+    OSM ways are routinely split exactly at intersection nodes."""
+    d1x, d1y = p2[0] - p1[0], p2[1] - p1[1]
+    d2x, d2y = p4[0] - p3[0], p4[1] - p3[1]
+    denom = d1x * d2y - d1y * d2x
+    if abs(denom) < 1e-9:
+        return None  # parallel or coincident
+    t = ((p3[0] - p1[0]) * d2y - (p3[1] - p1[1]) * d2x) / denom
+    u = ((p3[0] - p1[0]) * d1y - (p3[1] - p1[1]) * d1x) / denom
+    if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+        return (p1[0] + t * d1x, p1[1] + t * d1y)
+    return None
+
+
+def _polyline_intersections(
+    line_a: list[tuple[float, float]], line_b: list[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    points = []
+    for i in range(len(line_a) - 1):
+        for j in range(len(line_b) - 1):
+            pt = _segment_intersection(line_a[i], line_a[i + 1], line_b[j], line_b[j + 1])
+            if pt is not None:
+                points.append(pt)
+    return points
+
+
+def find_cross_streets(
+    main_road: RoadSegment,
+    main_centerline,  # core.geometry.Centerline; not type-hinted to avoid a circular import
+    candidates: list[RoadSegment],
+    station_min: float,
+    station_max: float,
+) -> list[dict]:
+    """Named roads from `candidates` (e.g. find_roads_near's own output —
+    no extra Overpass call needed) that geometrically cross
+    `main_centerline`, with the crossing's station on the main road inside
+    [station_min, station_max]. Returns a list of
+    {"road": RoadSegment, "main_station": float, "point": (lat, lng)},
+    sorted by station, deduped by osm_id (a curving side street that
+    crosses twice only gets one sign).
+
+    Unnamed ways are skipped — an unnamed alley/driveway isn't worth a
+    device and its OSM geometry is often unreliable anyway. Limited to
+    whatever `candidates` already covers (the same search radius used to
+    choose the main road, up to 250m) — a very long advance-warning window
+    on a high-speed road could in principle reach further than that; a
+    real but minor limitation, not fixed here."""
+    main_line_m = to_utm(main_road.coords, main_centerline.crs)
+    results: list[dict] = []
+    seen_ids: set[int] = set()
+    for cand in candidates:
+        if cand.osm_id == main_road.osm_id or cand.osm_id in seen_ids:
+            continue
+        if not cand.name or cand.name == "Unnamed Road":
+            continue
+        if len(cand.coords) < 2:
+            continue
+        cand_line_m = to_utm(cand.coords, main_centerline.crs)
+        for pt_m in _polyline_intersections(main_line_m, cand_line_m):
+            lat, lng = to_wgs84([pt_m], main_centerline.crs)[0]
+            station = main_centerline.station_of_nearest(lat, lng)
+            if station_min <= station <= station_max:
+                results.append({"road": cand, "main_station": station, "point": (lat, lng)})
+                seen_ids.add(cand.osm_id)
+                break
+    results.sort(key=lambda r: r["main_station"])
+    return results

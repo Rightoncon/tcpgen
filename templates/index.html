@@ -9,17 +9,18 @@
   {% if plans %}
   <table style="width:100%; border-collapse:collapse;">
     <thead><tr style="text-align:left; border-bottom:2px solid #eee;">
-      <th style="padding:8px;">Created</th><th style="padding:8px;">Address</th><th style="padding:8px;">Scope</th><th style="padding:8px;">TA Figure</th><th style="padding:8px;">Status</th><th></th>
+      <th style="padding:8px;">Created</th><th style="padding:8px;">Address</th><th style="padding:8px;">Scope</th><th style="padding:8px;">TA Figure</th><th style="padding:8px;">Status</th><th></th><th></th>
     </tr></thead>
     <tbody>
     {% for p in plans %}
-      <tr style="border-bottom:1px solid #f0f0f0;">
+      <tr style="border-bottom:1px solid #f0f0f0;" id="plan-row-{{ p['id'] }}">
         <td style="padding:8px;">{{ p['created_at'] }}</td>
         <td style="padding:8px;">{{ p['address'] }}</td>
         <td style="padding:8px;">{{ p['scope'] }}</td>
         <td style="padding:8px;">{{ p['ta_figure'] }}</td>
         <td style="padding:8px;">{{ p['status'] }}</td>
         <td style="padding:8px;"><a href="/plan/{{ p['id'] }}/preview">Open &rarr;</a></td>
+        <td style="padding:8px;"><a href="#" onclick="deletePlan({{ p['id'] }}); return false;" style="color:#dc2626;">Delete</a></td>
       </tr>
     {% endfor %}
     </tbody>
@@ -28,4 +29,16 @@
   <p>No plans yet. <a href="/plan/new">Create the first one</a>.</p>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function deletePlan(id) {
+  if (!confirm('Delete this plan? This cannot be undone.')) return;
+  const res = await fetch(`/api/plan/${id}`, {method: 'DELETE'});
+  if (!res.ok) { alert('Failed to delete.'); return; }
+  const row = document.getElementById(`plan-row-${id}`);
+  if (row) row.remove();
+}
+</script>
 {% endblock %}

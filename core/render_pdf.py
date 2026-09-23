@@ -407,9 +407,18 @@ def _draw_map(
             for i in range(3):
                 sx = px - w / 2 + (i + 0.5) * (w / 3)
                 c.line(sx - h / 2, py - h / 2, sx + h / 2, py + h / 2)
-        else:  # sign
-            size = 4
-            c.rect(px - size / 2, py - size / 2, size, size, fill=1, stroke=1)
+        else:  # sign -- diamond, matching the real MUTCD warning-sign
+            # shape and the reference plan (413 Alameda de las Pulgas)'s
+            # own schematic convention of drawing every sign as a diamond
+            # regardless of its actual real-world shape.
+            r = 4.5
+            path = c.beginPath()
+            path.moveTo(px, py + r)
+            path.lineTo(px + r, py)
+            path.lineTo(px, py - r)
+            path.lineTo(px - r, py)
+            path.close()
+            c.drawPath(path, fill=1, stroke=1)
             if stack_labels and d.code:
                 label_targets.append((px, py, d.code, d.label or "", d.station_ft))
 

@@ -21,10 +21,17 @@ from flask import Flask, abort, jsonify, render_template, request, send_from_dir
 
 from core.geocode import GeocodeError, geocode_address
 from core.geometry import Centerline
-from core.layout import Device, build_device_plan, default_work_area
+from core.layout import Device, advance_warning_window, build_device_plan, default_work_area
 from core.parcels import Parcel, SanMateoArcGIS, detect_corner_lot, frontage_length_ft, is_implausible_frontage
 from core.render_pdf import render_plan_pdfs
-from core.roads import RoadNotFoundError, RoadSegment, choose_road, find_roads_near
+from core.roads import (
+    RoadNotFoundError,
+    RoadSegment,
+    choose_road,
+    find_cross_streets,
+    find_roads_near,
+    find_roads_within,
+)
 from core.rules import (
     PEDESTRIAN_NOTE,
     Scope,
@@ -242,7 +249,16 @@ def api_express():
     except (ScopeNotSupportedError, TaFigureNotBuiltError) as exc:
         return jsonify({"error": str(exc)}), 422
 
-    devices, layout_warnings = build_device_plan(centerline, road, work_area, scope, ta_figure, sidewalk_affected=sidewalk)
+    station_min, station_max = advance_warning_window(work_area, ta_figure, road.speed_mph)
+    # A dedicated, full-radius candidate pool -- `roads` (find_roads_near's
+    # output) stops widening as soon as it finds anything, which is almost
+    # always just this job's own road, so it can't be reused here.
+    cross_candidates = find_roads_within(geo.lat, geo.lng)
+    cross_streets = find_cross_streets(road, centerline, cross_candidates, station_min, station_max)
+
+    devices, layout_warnings = build_device_plan(
+        centerline, road, work_area, scope, ta_figure, sidewalk_affected=sidewalk, cross_streets=cross_streets
+    )
     warnings.extend(layout_warnings)
     if sidewalk:
         warnings.append(PEDESTRIAN_NOTE)
@@ -307,6 +323,27 @@ def api_update_plan(plan_id: int):
             abort(404)
         conn.execute(f"UPDATE plan SET {set_clause}, updated_at=datetime('now') WHERE id=?", (*updates.values(), plan_id))
         log_audit(conn, plan_id, "web", "update", json.dumps(updates))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plan/<int:plan_id>", methods=["DELETE"])
+def api_delete_plan(plan_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT pdf_sheet1_path, pdf_sheet2_path FROM plan WHERE id=?", (plan_id,)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        for path in (row["pdf_sheet1_path"], row["pdf_sheet2_path"]):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        # device rows cascade via the FK (PRAGMA foreign_keys=ON in get_conn);
+        # audit has no FK on this table, so it needs an explicit delete.
+        conn.execute("DELETE FROM plan WHERE id=?", (plan_id,))
+        conn.execute("DELETE FROM audit WHERE plan_id=?", (plan_id,))
     return jsonify({"ok": True})
 
 

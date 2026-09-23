@@ -5,12 +5,13 @@ from hypothesis.strategies import floats, sampled_from
 from core.geometry import Centerline, to_wgs84
 from core.layout import (
     WorkArea,
+    advance_warning_window,
     build_device_plan,
     check_scope_matches_geometry,
     default_work_area,
 )
 from core.parcels import Parcel
-from core.roads import RoadSegment
+from core.roads import RoadSegment, find_cross_streets
 from core.rules import Scope, get_ta_figure, load_ta_figures
 
 # A long straight north-south line so every combination of road width and
@@ -223,3 +224,53 @@ def test_no_device_leaves_the_roadway(road_width, speed):
     devices, _warnings = build_device_plan(cl, road, wa, Scope.ONE_LANE, ta_figure)
     for d in devices:
         assert abs(d.offset_ft) <= road_width / 2 + 1e-6, f"{d.kind} {d.code} off the road: {d.offset_ft}"
+
+
+# ---- side-street signage (General Note 8 of the reference plan) -----------
+
+
+def test_advance_warning_window_spans_both_approaches():
+    ta_figure = get_ta_figure(Scope.BEHIND_CURB, _figures())  # 2 signs, mult up to 2
+    wa = WorkArea(start_station_ft=200, end_station_ft=260, near_offset_ft=-5, far_offset_ft=5, side=1)
+    lo, hi = advance_warning_window(wa, ta_figure, 25)
+    assert lo < wa.start_station_ft
+    assert hi > wa.end_station_ft
+
+
+def test_build_device_plan_adds_cross_street_signs():
+    road = _road(width_ft=36, speed_mph=25)  # very wide, deliberately different from the cross street
+    cl = Centerline(road.coords)
+    wa = default_work_area(None, cl, road, Scope.BEHIND_CURB, (LONG_LINE[30][0], LONG_LINE[30][1]))
+    ta_figure = get_ta_figure(Scope.BEHIND_CURB, _figures())
+
+    # A narrow cross street crossing the (perfectly straight, N-S) main
+    # line right at the work area's own start station -- guaranteed inside
+    # the advance-warning window regardless of where LONG_LINE anchors it.
+    cross_lat, _cross_lng = to_wgs84([cl.point_at(wa.start_station_ft)], cl.crs)[0]
+    cross_road = RoadSegment(
+        99, "Cross St", [(cross_lat, -122.4120), (cross_lat, -122.4080)], 24, 2, 25, False, "residential"
+    )
+    station_min, station_max = advance_warning_window(wa, ta_figure, road.speed_mph)
+    cross_streets = find_cross_streets(road, cl, [road, cross_road], station_min, station_max)
+    assert len(cross_streets) == 1  # sanity: the fixture actually crosses within the window
+
+    devices, _warnings = build_device_plan(
+        cl, road, wa, Scope.BEHIND_CURB, ta_figure, cross_streets=cross_streets
+    )
+    cross_signs = [d for d in devices if d.approach == "X"]
+    assert len(cross_signs) == 1
+    assert cross_signs[0].code == "W20-1"
+    assert "Cross St" in cross_signs[0].label
+    # Clamped against the CROSS street's own (narrower) width, not the main
+    # road's -- this is exactly why the road-edge invariant below has to
+    # skip approach == "X" devices.
+    assert abs(cross_signs[0].offset_ft) <= cross_road.width_ft / 2
+
+
+def test_build_device_plan_without_cross_streets_arg_adds_nothing():
+    road = _road(width_ft=36, speed_mph=25)
+    cl = Centerline(road.coords)
+    wa = default_work_area(None, cl, road, Scope.BEHIND_CURB, (LONG_LINE[30][0], LONG_LINE[30][1]))
+    ta_figure = get_ta_figure(Scope.BEHIND_CURB, _figures())
+    devices, _warnings = build_device_plan(cl, road, wa, Scope.BEHIND_CURB, ta_figure)
+    assert not any(d.approach == "X" for d in devices)

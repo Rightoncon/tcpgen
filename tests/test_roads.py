@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
+from core.geometry import Centerline
 from core.roads import (
     RoadNotFoundError,
     RoadSegment,
@@ -11,6 +12,7 @@ from core.roads import (
     _parking_width_bonus_ft,
     _road_from_element,
     choose_road,
+    find_cross_streets,
     find_roads_near,
 )
 
@@ -148,3 +150,71 @@ def test_choose_road_tie_breaks_on_highway_class():
 def test_choose_road_raises_on_empty_candidates():
     with pytest.raises(RoadNotFoundError):
         choose_road([], 37.63, -122.41)
+
+
+# ---- side-street signage (find_cross_streets) ------------------------------
+
+
+def _main_road():
+    # Straight N-S line, ~728 ft long.
+    return RoadSegment(
+        1, "Main St", [(37.6300, -122.4100), (37.6320, -122.4100)], 36, 2, 25, False, "residential"
+    )
+
+
+def test_find_cross_streets_finds_a_real_perpendicular_crossing():
+    main = _main_road()
+    cl = Centerline(main.coords)
+    cross = RoadSegment(
+        2, "Cross St", [(37.6310, -122.4120), (37.6310, -122.4080)], 36, 2, 25, False, "residential"
+    )
+    result = find_cross_streets(main, cl, [main, cross], 0, cl.length_ft)
+    assert len(result) == 1
+    assert result[0]["road"].name == "Cross St"
+    assert 0 <= result[0]["main_station"] <= cl.length_ft
+    assert result[0]["point"] is not None
+
+
+def test_find_cross_streets_ignores_a_crossing_outside_the_station_window():
+    main = _main_road()
+    cl = Centerline(main.coords)
+    cross = RoadSegment(
+        2, "Cross St", [(37.6310, -122.4120), (37.6310, -122.4080)], 36, 2, 25, False, "residential"
+    )
+    intersection_station = cl.station_of_nearest(37.6310, -122.4100)
+    # window that ends well before the real crossing station
+    result = find_cross_streets(main, cl, [main, cross], 0, intersection_station - 50)
+    assert result == []
+
+
+def test_find_cross_streets_ignores_non_intersecting_roads():
+    main = _main_road()
+    cl = Centerline(main.coords)
+    parallel = RoadSegment(
+        2, "Parallel St", [(37.6300, -122.4200), (37.6320, -122.4200)], 36, 2, 25, False, "residential"
+    )
+    result = find_cross_streets(main, cl, [main, parallel], 0, cl.length_ft)
+    assert result == []
+
+
+def test_find_cross_streets_ignores_unnamed_roads():
+    main = _main_road()
+    cl = Centerline(main.coords)
+    cross = RoadSegment(
+        2, "Unnamed Road", [(37.6310, -122.4120), (37.6310, -122.4080)], 36, 2, 25, False, "service"
+    )  # matches how _road_from_element fills a missing name
+    result = find_cross_streets(main, cl, [main, cross], 0, cl.length_ft)
+    assert result == []
+
+
+def test_find_cross_streets_dedupes_a_road_that_crosses_twice():
+    main = _main_road()
+    cl = Centerline(main.coords)
+    # A wiggly cross street that crosses the (perfectly straight) main road twice.
+    cross = RoadSegment(
+        2, "Wiggly St",
+        [(37.6305, -122.4120), (37.6305, -122.4080), (37.6315, -122.4080), (37.6315, -122.4120)],
+        36, 2, 25, False, "residential",
+    )
+    result = find_cross_streets(main, cl, [main, cross], 0, cl.length_ft)
+    assert len(result) == 1

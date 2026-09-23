@@ -43,6 +43,8 @@ SIGN_SHOULDER_OFFSET_FT = 6.0  # spec §8.1: signs at road_width_ft/2 + 6
 FLAGGER_EDGE_BUFFER_FT = 3.0  # spec §8.1: flaggers at road_width_ft/2 - 3
 CONE_RUN_PAD_FT = 25.0  # spec §8.1: cone run extends 25 ft past the work area
 FLAGGER_STANDOFF_FT = 50.0  # spec §8.1: flagger stands 50 ft upstream of the taper
+CROSS_STREET_SIGN_STANDOFF_FT = 50.0  # sign stands this far back from the intersection
+CROSS_STREET_SIGN_SIDE = 1  # fixed shoulder side -- see _build_cross_street_signs docstring
 
 
 @dataclass
@@ -360,6 +362,58 @@ def _build_cul_de_sac(centerline, road, work_area, ta_figure, speed_mph, sidewal
     return devices
 
 
+def advance_warning_window(work_area: WorkArea, ta_figure: TaFigure, speed_mph: int) -> tuple[float, float]:
+    """Station range covering both approaches' advance-warning signage —
+    used to decide which cross streets count as "within the advance
+    warning area" for side-street signage (reference plan General Note 8).
+    A single symmetric window around both ends rather than exactly
+    mirroring each TA-builder's own per-approach station math, which would
+    mean duplicating each builder's internal logic here."""
+    if not ta_figure.signs_per_approach:
+        return work_area.start_station_ft, work_area.end_station_ft
+    max_mult = max(s.station_multiplier for s in ta_figure.signs_per_approach)
+    advance = max_mult * sign_spacing_ft(speed_mph)
+    return work_area.start_station_ft - advance, work_area.end_station_ft + advance
+
+
+def _build_cross_street_signs(cross_streets: list[dict], seq_start: int) -> list[Device]:
+    """Reference plan (413 Alameda de las Pulgas), General Note 8: "PLACE
+    W20-1 'ROAD WORK AHEAD' SIGNS ON ALL SIDE STREETS WITHIN THE ADVANCE
+    WARNING AREA." `cross_streets` comes from core.roads.find_cross_streets
+    — real geometric intersections, not a guess.
+
+    Placed `CROSS_STREET_SIGN_STANDOFF_FT` back from the intersection
+    along the cross street's own centerline, at a fixed shoulder side
+    (`CROSS_STREET_SIGN_SIDE`) — this phase has no reliable way to know
+    which side actually has a shoulder/is buildable on an arbitrary side
+    street, so the side is a known simplification, same spirit as the
+    R9-11 "nearest crossing" stand-in elsewhere in this file. `approach`
+    is set to "X" (cross-street) so build_device_plan's road-edge
+    invariant check — which is about the *main* road's width — skips
+    these; they're clamped against their own cross street's width
+    instead, via the same `_place` used everywhere else."""
+    devices = []
+    seq = seq_start
+    for cs in cross_streets:
+        cross_road = cs["road"]
+        try:
+            cross_cl = Centerline(cross_road.coords)
+        except ValueError:
+            continue  # degenerate geometry (shouldn't happen with real OSM data); skip rather than crash
+        station_at_intersection = cross_cl.station_of_nearest(*cs["point"])
+        sign_station = max(0.0, station_at_intersection - CROSS_STREET_SIGN_STANDOFF_FT)
+        offset = CROSS_STREET_SIGN_SIDE * (cross_road.width_ft / 2 + SIGN_SHOULDER_OFFSET_FT)
+        devices.append(
+            _place(
+                cross_cl, cross_road.width_ft, sign_station, offset,
+                kind="sign", code="W20-1", label=f"ROAD WORK AHEAD — {cross_road.name}",
+                approach="X", seq=seq,
+            )
+        )
+        seq += 1
+    return devices
+
+
 def build_device_plan(
     centerline: Centerline,
     road: RoadSegment,
@@ -368,9 +422,12 @@ def build_device_plan(
     ta_figure: TaFigure,
     *,
     sidewalk_affected: bool = False,
+    cross_streets: Optional[list[dict]] = None,
 ) -> tuple[list[Device], list[str]]:
     """spec §8.1. Returns (devices, warnings) — warnings are things the
-    operator should double-check, not failures."""
+    operator should double-check, not failures. `cross_streets` (optional)
+    is core.roads.find_cross_streets' own output — pass it to get side-
+    street "ROAD WORK AHEAD" signage; omit it (or pass []) to skip that."""
     warnings = []
     mismatch = check_scope_matches_geometry(work_area, road, scope)
     if mismatch:
@@ -385,11 +442,18 @@ def build_device_plan(
     else:
         raise ValueError(f"Unsupported scope for layout: {scope}")
 
+    if cross_streets:
+        devices += _build_cross_street_signs(cross_streets, len(devices))
+
     # spec §7.3 bug-killer, restated as an explicit invariant: every device
     # must be inside the road edge. _place() clamps every device before
     # this ever runs, so this should never actually fire — it's the "fail
-    # loudly in dev" backstop the spec asks for.
+    # loudly in dev" backstop the spec asks for. Cross-street signs
+    # (approach == "X") are clamped against their own street's width, not
+    # this one, so they're exempt from this specific check by design.
     for d in devices:
+        if d.approach == "X":
+            continue
         if abs(d.offset_ft) > road.width_ft / 2 + 1e-6:
             raise AssertionError(
                 f"{d.kind} {d.code or ''} ended up outside the road edge: "

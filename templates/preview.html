@@ -11,7 +11,10 @@
     <h1 style="margin:0 0 4px 0;">{{ plan['address'] }}</h1>
     <div style="color:#6b7280;">{{ plan['road_name'] }} &middot; {{ plan['scope'] }} &middot; TA {{ plan['ta_figure'] }}</div>
   </div>
-  <a class="btn secondary" href="/">&larr; All plans</a>
+  <div>
+    <a class="btn secondary" href="/">&larr; All plans</a>
+    <a href="#" onclick="deleteThisPlan(); return false;" style="color:#dc2626; margin-left:14px; font-size:13px;">Delete plan</a>
+  </div>
 </div>
 
 {% if warnings %}
@@ -86,5 +89,12 @@ document.getElementById('render-btn').addEventListener('click', async () => {
     `<a class="btn secondary" style="display:block; margin-bottom:6px;" href="${data.sheet1_url}" target="_blank">Sheet 1 &mdash; Close-Up</a>` +
     `<a class="btn secondary" style="display:block;" href="${data.sheet2_url}" target="_blank">Sheet 2 &mdash; Wide Area</a>`;
 });
+
+async function deleteThisPlan() {
+  if (!confirm('Delete this plan? This cannot be undone.')) return;
+  const res = await fetch('/api/plan/{{ plan["id"] }}', {method: 'DELETE'});
+  if (!res.ok) { alert('Failed to delete.'); return; }
+  window.location.href = '/';
+}
 </script>
 {% endblock %}

@@ -17,7 +17,7 @@ from typing import Optional
 
 from core.geocode import GeocodeError, GeocodeResult, geocode_address
 from core.geometry import Centerline
-from core.layout import Device, WorkArea, build_device_plan, default_work_area
+from core.layout import Device, WorkArea, advance_warning_window, build_device_plan, default_work_area
 from core.parcels import (
     NoParcelProvider,
     Parcel,
@@ -25,7 +25,14 @@ from core.parcels import (
     detect_corner_lot,
     is_implausible_frontage,
 )
-from core.roads import RoadNotFoundError, RoadSegment, choose_road, find_roads_near
+from core.roads import (
+    RoadNotFoundError,
+    RoadSegment,
+    choose_road,
+    find_cross_streets,
+    find_roads_near,
+    find_roads_within,
+)
 from core.rules import (
     PEDESTRIAN_NOTE,
     Scope,
@@ -73,8 +80,15 @@ def build_plan(
     figures = load_ta_figures()
     ta_figure = get_ta_figure(scope, figures)
 
+    station_min, station_max = advance_warning_window(work_area, ta_figure, road.speed_mph)
+    # A dedicated, full-radius candidate pool -- `roads` (find_roads_near's
+    # output) stops widening as soon as it finds anything, which is almost
+    # always just this job's own road, so it can't be reused here.
+    cross_candidates = find_roads_within(geo.lat, geo.lng)
+    cross_streets = find_cross_streets(road, centerline, cross_candidates, station_min, station_max)
+
     devices, layout_warnings = build_device_plan(
-        centerline, road, work_area, scope, ta_figure, sidewalk_affected=sidewalk
+        centerline, road, work_area, scope, ta_figure, sidewalk_affected=sidewalk, cross_streets=cross_streets
     )
     warnings.extend(layout_warnings)
     if sidewalk:
