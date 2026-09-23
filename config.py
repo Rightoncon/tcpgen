@@ -3,10 +3,9 @@ Drive folder ids, etc. here."""
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-# spec §10.1 footer. CSLB_NUMBER is a placeholder — fill in the real
-# license number before any sheet leaves this VPS for actual use.
+# spec §10.1 footer.
 CONTRACTOR_NAME = "Right On Construction, Inc."
-CSLB_NUMBER = None  # e.g. "CSLB #123456" — TODO: Michael to confirm
+CSLB_NUMBER = "CSLB #1092689"
 
 # spec §2 BASEMAP_PROVIDER flag. No Mapbox/Google Static Maps token is
 # configured yet, so render_pdf.py draws the road centerline as vector
