@@ -1,5 +1,26 @@
 """Minimal config, grown phase by phase. Later phases add Flask secrets,
-Drive folder ids, etc. here."""
+Drive folder ids, etc. here.
+
+Secrets live in .env (spec §15: "never committed") — gitignored since
+Phase 1, loaded here with a tiny dependency-free parser rather than
+pulling in python-dotenv for one file."""
+
+import os
+from pathlib import Path
+
+
+def _load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv(Path(__file__).resolve().parent / ".env")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
@@ -7,14 +28,13 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 CONTRACTOR_NAME = "Right On Construction, Inc."
 CSLB_NUMBER = "CSLB #1092689"
 
-# spec §2 BASEMAP_PROVIDER flag. No Mapbox/Google Static Maps token is
-# configured yet, so render_pdf.py draws the road centerline as vector
-# graphics instead of compositing onto a fetched raster tile — same pixel
-# projection either way (core/geometry.py latlng_to_pixel), so plugging in
-# a real basemap later is additive, not a rewrite. Set MAPBOX_TOKEN once
-# Michael provides one.
-BASEMAP_PROVIDER = "none"  # 'none' | 'mapbox' | 'google'
-MAPBOX_TOKEN = None
+# spec §2 BASEMAP_PROVIDER flag. MAPBOX_TOKEN comes from .env, never from
+# this file. Until it's set, render_pdf.py draws the road centerline as
+# vector graphics instead of compositing onto a fetched raster tile — same
+# pixel projection either way (core/geometry.py latlng_to_pixel), so wiring
+# in the real basemap fetch later is additive, not a rewrite.
+MAPBOX_TOKEN = os.environ.get("MAPBOX_TOKEN")
+BASEMAP_PROVIDER = "mapbox" if MAPBOX_TOKEN else "none"  # 'none' | 'mapbox' | 'google'
 
 # San Mateo County parcels — layer id VERIFIED 2026-09-23 (not a guess) by
 # fetching https://gis.smcgov.org/maps/rest/services/PLANNING/COUNTY_PARCELS/FeatureServer?f=pjson
