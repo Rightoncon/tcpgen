@@ -114,19 +114,32 @@ def frontage_length_ft(parcel: Parcel, centerline: Centerline) -> float:
     return s1 - s0
 
 
-def work_side(parcel: Optional[Parcel], centerline: Centerline) -> int:
+def work_side(
+    parcel: Optional[Parcel],
+    centerline: Centerline,
+    geocoded_point: Optional[tuple[float, float]] = None,
+) -> int:
     """sign(median(perpendicular offsets of the parcel's vertices)).
 
-    Defaults to the right side (+1) when there's no parcel — spec §8.2's
-    `default_work_area` calls this even in the no-parcel branch, and
-    nothing else is known at that point. A later phase with a UI should
-    let the operator confirm/flip this."""
-    if parcel is None:
-        return 1
-    offsets = [
-        centerline.station_and_offset_of_nearest(lat, lng)[1] for lat, lng in parcel.polygon
-    ]
-    return 1 if statistics.median(offsets) >= 0 else -1
+    When there's no parcel (a real, expected case — ArcGIS coverage gaps
+    exist even inside the county), fall back to the sign of the geocoded
+    address point's own offset from the centerline rather than blindly
+    guessing +1. That point is real address-level data and is *almost
+    always* correctly offset to whichever side the house is actually on
+    (confirmed live: a hardcoded +1 put a work area across the street from
+    635 Costa Rica Ave, San Mateo, where the point itself was clearly
+    offset -28.8 ft — the correct side was sitting right there, just
+    discarded). Only fully blind (no parcel AND no point) does this still
+    default to +1."""
+    if parcel is not None:
+        offsets = [
+            centerline.station_and_offset_of_nearest(lat, lng)[1] for lat, lng in parcel.polygon
+        ]
+        return 1 if statistics.median(offsets) >= 0 else -1
+    if geocoded_point is not None:
+        _, offset = centerline.station_and_offset_of_nearest(*geocoded_point)
+        return 1 if offset >= 0 else -1
+    return 1
 
 
 CORNER_LOT_FRONTAGE_THRESHOLD_FT = 250.0

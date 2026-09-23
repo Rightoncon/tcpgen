@@ -85,7 +85,7 @@ def default_work_area(
         s = centerline.station_of_nearest(*geocoded_point)
         s0, s1 = s - DEFAULT_FRONTAGE_HALF_FT, s + DEFAULT_FRONTAGE_HALF_FT
 
-    side = work_side(parcel, centerline)
+    side = work_side(parcel, centerline, geocoded_point)
 
     if scope == Scope.BEHIND_CURB:
         near = side * (road.width_ft / 2 + 1)

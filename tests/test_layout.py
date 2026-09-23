@@ -40,7 +40,24 @@ def test_default_work_area_no_parcel_uses_60ft_default():
     lat, lng = to_wgs84([midpoint], cl.crs)[0]
     wa = default_work_area(None, cl, road, Scope.BEHIND_CURB, (lat, lng))
     assert wa.end_station_ft - wa.start_station_ft == pytest.approx(60, abs=1)
-    assert wa.side == 1  # documented default when there's no parcel
+    # A point sitting exactly on the centerline has no well-defined side --
+    # side determination itself is covered properly (with a clearly offset
+    # point) in test_parcels.py::test_work_side_uses_geocoded_point_when_no_parcel.
+
+
+def test_default_work_area_no_parcel_side_follows_the_geocoded_point():
+    """spec-fix 2026-09-23: a real address with no parcel on file must still
+    land on the correct side of the street, using the geocoded point's own
+    offset -- not a hardcoded +1 (that bug put a real job's work area across
+    the street: 635 Costa Rica Ave, San Mateo)."""
+    road = _road()
+    cl = Centerline(road.coords)
+    on_the_right = to_wgs84([cl.offset_point(cl.length_ft / 2, 30)], cl.crs)[0]
+    on_the_left = to_wgs84([cl.offset_point(cl.length_ft / 2, -30)], cl.crs)[0]
+    wa_right = default_work_area(None, cl, road, Scope.BEHIND_CURB, on_the_right)
+    wa_left = default_work_area(None, cl, road, Scope.BEHIND_CURB, on_the_left)
+    assert wa_right.side == 1
+    assert wa_left.side == -1
 
 
 def test_default_work_area_behind_curb_offsets_are_outside_the_road():

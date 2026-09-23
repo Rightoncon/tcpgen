@@ -131,9 +131,21 @@ def test_work_side_negative_when_parcel_is_on_the_negative_offset_side():
     assert work_side(parcel, cl) == -1
 
 
-def test_work_side_defaults_to_positive_with_no_parcel():
+def test_work_side_defaults_to_positive_with_no_parcel_or_point():
     cl = Centerline(LONG_LINE)
     assert work_side(None, cl) == 1
+
+
+def test_work_side_uses_geocoded_point_when_no_parcel():
+    """Real bug, caught live 2026-09-23: 635 Costa Rica Ave, San Mateo had
+    no parcel on file, and the old hardcoded +1 put the work area across
+    the street. The geocoded point itself already carries the correct
+    side -- use it instead of guessing."""
+    cl = Centerline(LONG_LINE)
+    point_on_right = to_wgs84([cl.offset_point(300, 30)], cl.crs)[0]
+    point_on_left = to_wgs84([cl.offset_point(300, -30)], cl.crs)[0]
+    assert work_side(None, cl, point_on_right) == 1
+    assert work_side(None, cl, point_on_left) == -1
 
 
 def test_is_implausible_frontage_flags_long_frontage():
