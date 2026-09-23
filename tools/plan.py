@@ -1,7 +1,9 @@
-"""Express-mode CLI (spec §13 Phase 2 deliverable) — no UI, no PDF. Proves
-the whole address-to-device-list pipeline works end to end:
+"""Express-mode CLI (spec §13 Phase 2 deliverable, now with Phase 3 PDF
+output) — no web UI. Proves the whole address-to-device-list pipeline
+works end to end:
 
     python -m tools.plan --address "157 San Marco Ave, San Bruno CA" --scope behind_curb
+    python -m tools.plan --address "..." --scope one_lane --pdf
 
 Per spec §13: "If it produces a correct device list from an address and a
 scope, the hard part is done."
@@ -87,6 +89,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--scope", required=True, choices=[s.value for s in Scope])
     parser.add_argument("--sidewalk", action="store_true", help="sidewalk is affected (adds the pedestrian package)")
     parser.add_argument("--street", default=None, help="street name hint, for intersections")
+    parser.add_argument("--pdf", action="store_true", help="also render both PDF sheets (spec §10)")
+    parser.add_argument("--out-dir", default="out", help="directory for rendered PDFs (default: out/)")
+    parser.add_argument("--permit", default=None, help="permit number, printed on the sheets")
+    parser.add_argument("--job", default=None, help="job number, printed on the sheets")
     args = parser.parse_args(argv)
 
     try:
@@ -118,6 +124,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("\nWarnings:")
         for w in warnings:
             print(f"  - {w}")
+
+    if args.pdf:
+        from core.render_pdf import render_plan_pdfs
+
+        sheet1, sheet2 = render_plan_pdfs(
+            args.address, geo, road, work_area, Scope(args.scope), ta_figure, devices, warnings,
+            args.out_dir, permit_number=args.permit, job_number=args.job,
+        )
+        print(f"\nWrote:\n  {sheet1}\n  {sheet2}")
 
     return 0
 

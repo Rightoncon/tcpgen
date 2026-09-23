@@ -190,3 +190,72 @@ class Centerline:
                     # methods agree on what "positive" means.
                     best_offset_m = (vx * dy - vy * dx) / seg_len
         return best_station_m, best_offset_m
+
+
+# spec §7.5 — lat/lng -> pixel on a static Web Mercator basemap image. Used
+# both for compositing onto a fetched raster tile (once basemap.py exists)
+# and for placing vector graphics (device dots, road lines) at the correct
+# spot on a PDF page with no raster behind them at all — the projection
+# math is the same either way.
+
+
+def latlng_to_pixel(
+    lat: float, lng: float, center_lat: float, center_lng: float, zoom: float, w: float, h: float, scale: float = 2
+) -> tuple[float, float]:
+    world = 256 * 2**zoom * scale
+
+    def wx(lng_: float) -> float:
+        return (lng_ + 180) / 360 * world
+
+    def wy(lat_: float) -> float:
+        s = math.sin(math.radians(lat_))
+        return (0.5 - math.log((1 + s) / (1 - s)) / (4 * math.pi)) * world
+
+    px = wx(lng) - wx(center_lng) + w * scale / 2
+    py = wy(lat) - wy(center_lat) + h * scale / 2
+    return px, py
+
+
+def _pixel_bbox(
+    points: Sequence[tuple[float, float]], center_lat: float, center_lng: float, zoom: float, w: float, h: float, scale: float
+) -> tuple[float, float, float, float]:
+    xs, ys = [], []
+    for lat, lng in points:
+        px, py = latlng_to_pixel(lat, lng, center_lat, center_lng, zoom, w, h, scale)
+        xs.append(px)
+        ys.append(py)
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def choose_zoom(
+    points: Sequence[tuple[float, float]],
+    center_lat: float,
+    center_lng: float,
+    w: float,
+    h: float,
+    *,
+    scale: float = 2,
+    margin: float = 0.15,
+    zoom_min: int = 15,
+    zoom_max: int = 20,
+) -> int:
+    """spec §7.5: "Zoom is chosen so the full device extent plus 15% margin
+    fits the frame. Compute the bounding box of all devices, then
+    binary-search zoom from 20 down to 15." Returns the most zoomed-in
+    (highest) level at which every point in `points` still fits within
+    `w`x`h` after shrinking the frame by `margin` on each axis."""
+    if not points:
+        return zoom_max
+    target_w = w * scale * (1 - margin)
+    target_h = h * scale * (1 - margin)
+    best = zoom_min
+    lo, hi = zoom_min, zoom_max
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        x0, x1, y0, y1 = _pixel_bbox(points, center_lat, center_lng, mid, w, h, scale)
+        if (x1 - x0) <= target_w and (y1 - y0) <= target_h:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best

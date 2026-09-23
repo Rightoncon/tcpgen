@@ -152,7 +152,12 @@ def _cone_run(centerline, road, start_station, end_station, offset_ft, *, spacin
     while s < end_station:
         stations.append(s)
         s += spacing_ft
-    stations.append(end_station)
+    # Always include the endpoint, but not as a near-duplicate of the last
+    # regular step — spacing rarely divides the run evenly, so without this
+    # check a real rendered sheet shows two cone markers almost on top of
+    # each other right at the end of the run.
+    if not stations or (end_station - stations[-1]) > spacing_ft * 0.25:
+        stations.append(end_station)
     for st in stations:
         devices.append(_place(centerline, road.width_ft, st, offset_ft, kind="cone", approach=approach, seq=seq))
         seq += 1
