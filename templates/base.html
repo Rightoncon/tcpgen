@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}tcpgen{% endblock %}</title>
+<style>
+  :root { --navy:#0f3460; --red:#e94560; --orange:#ea580c; --bg:#f5f6f8; --panel:#0d1b2a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:#111; }
+  header.topbar { background:var(--navy); color:#fff; padding:12px 20px; display:flex; align-items:center; justify-content:space-between; }
+  header.topbar a { color:#fff; text-decoration:none; font-weight:700; font-size:16px; }
+  header.topbar .draft-badge { background:var(--red); padding:4px 10px; border-radius:4px; font-size:12px; font-weight:700; }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  .btn { display:inline-block; background:var(--orange); color:#fff; border:none; padding:10px 18px; border-radius:6px; font-weight:600; cursor:pointer; text-decoration:none; font-size:14px; text-align:center; }
+  .btn:hover { opacity:0.92; }
+  .btn:disabled { background:#d1d5db; cursor:not-allowed; }
+  .btn.secondary { background:#374151; }
+  .card { background:#fff; border-radius:8px; padding:16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <a href="/">TCP Generator</a>
+  <span class="draft-badge">DRAFT TOOL &mdash; Right On Construction</span>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

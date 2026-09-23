@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}New Plan &mdash; tcpgen{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  .field-label { display:block; font-size:12px; font-weight:700; color:#6b7280; text-transform:uppercase; margin-bottom:4px; }
+  .hint { font-size:12px; color:#6b7280; margin-top:4px; min-height:16px; }
+  .scope-opt { display:block; padding:8px 10px; border:1px solid #e5e7eb; border-radius:6px; margin-bottom:6px; cursor:pointer; }
+  .scope-opt:has(input:checked) { border-color:var(--orange); background:#fff7ed; }
+  input[type=text], input[type=number], textarea, select { border:1px solid #d1d5db; border-radius:6px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:grid; grid-template-columns: 380px 1fr; gap:20px; align-items:start;">
+  <div class="card">
+    <h2 style="margin-top:0;">New Traffic Control Plan</h2>
+
+    <label class="field-label">Address</label>
+    <input id="address" type="text" placeholder="157 San Marco Ave, San Bruno CA" style="width:100%; padding:8px; font-size:15px;">
+    <div id="geocode-status" class="hint"></div>
+
+    <label class="field-label" style="margin-top:12px;">Street</label>
+    <select id="street" style="width:100%; padding:8px;" disabled>
+      <option value="">&mdash; geocode an address first &mdash;</option>
+    </select>
+
+    <div style="margin-top:14px;">
+      <label class="field-label">Work is&hellip;</label>
+      <div class="scope-options">
+        <label class="scope-opt"><input type="radio" name="scope" value="behind_curb"> Behind the curb</label>
+        <label class="scope-opt"><input type="radio" name="scope" value="shoulder"> Taking the shoulder</label>
+        <label class="scope-opt"><input type="radio" name="scope" value="one_lane"> Closing one lane</label>
+        <label class="scope-opt"><input type="radio" name="scope" value="cul_de_sac"> Cul-de-sac</label>
+      </div>
+    </div>
+
+    <div style="margin-top:10px;">
+      <label><input type="checkbox" id="sidewalk"> Sidewalk blocked</label><br>
+      <label><input type="checkbox" id="parking"> Parking lane used</label>
+    </div>
+
+    <details style="margin-top:14px;">
+      <summary style="cursor:pointer; font-weight:600;">Details</summary>
+      <div style="margin-top:10px;">
+        <label class="field-label">Road width (ft)</label>
+        <input id="road_width" type="number" step="1" style="width:100%; padding:6px;" placeholder="auto from OSM">
+        <label class="field-label" style="margin-top:8px;">Posted speed (mph)</label>
+        <input id="posted_speed" type="number" step="5" style="width:100%; padding:6px;" placeholder="auto from OSM">
+        <label class="field-label" style="margin-top:8px;">Permit #</label>
+        <input id="permit_number" type="text" style="width:100%; padding:6px;">
+        <label class="field-label" style="margin-top:8px;">Job #</label>
+        <input id="job_number" type="text" style="width:100%; padding:6px;">
+        <label class="field-label" style="margin-top:8px;">Notes</label>
+        <textarea id="notes" rows="3" style="width:100%; padding:6px;"></textarea>
+      </div>
+    </details>
+
+    <button id="generate-btn" class="btn" style="width:100%; margin-top:16px;" disabled>Generate Plan</button>
+    <div id="generate-status" class="hint"></div>
+  </div>
+
+  <div class="card" style="padding:0; overflow:hidden;">
+    <div id="map" style="height:640px;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([37.5630, -122.3255], 11); // San Mateo County
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
+}).addTo(map);
+
+let marker = null, roadLine = null, parcelPoly = null;
+let currentGeo = null, currentRoads = [], currentRoad = null;
+
+function setStatus(el, msg, isError) {
+  el.textContent = msg;
+  el.style.color = isError ? '#dc2626' : '#6b7280';
+}
+
+function checkReady() {
+  const scope = document.querySelector('input[name="scope"]:checked');
+  document.getElementById('generate-btn').disabled = !(currentGeo && currentRoad && scope);
+}
+
+document.getElementById('address').addEventListener('blur', async () => {
+  const address = document.getElementById('address').value.trim();
+  const statusEl = document.getElementById('geocode-status');
+  if (!address) return;
+  setStatus(statusEl, 'Looking up address...', false);
+  try {
+    const res = await fetch('/api/geocode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({address})});
+    const data = await res.json();
+    if (!res.ok) { setStatus(statusEl, data.error || 'Address not found', true); return; }
+    currentGeo = data;
+    setStatus(statusEl, data.display_name, false);
+
+    if (marker) marker.remove();
+    marker = L.marker([data.lat, data.lng]).addTo(map);
+    map.setView([data.lat, data.lng], 18);
+
+    await loadRoads(data.lat, data.lng);
+    await loadParcel(data.lat, data.lng);
+  } catch (err) {
+    setStatus(statusEl, 'Lookup failed: ' + err, true);
+  }
+  checkReady();
+});
+
+async function loadRoads(lat, lng) {
+  const sel = document.getElementById('street');
+  const res = await fetch('/api/roads', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({lat, lng})});
+  const data = await res.json();
+  if (!res.ok) { sel.innerHTML = '<option value="">' + (data.error || 'no road found') + '</option>'; sel.disabled = true; return; }
+  currentRoads = data.roads;
+  sel.innerHTML = currentRoads.map((r, i) => `<option value="${i}">${r.name}</option>`).join('');
+  sel.disabled = false;
+  // Auto-focus the picker when more than one street is nearby -- the
+  // simplest proxy this page has for "this might be a corner lot" without
+  // reimplementing core.parcels.detect_corner_lot's real geometry in JS.
+  if (currentRoads.length > 1) sel.focus();
+  selectRoad(0);
+}
+
+function selectRoad(index) {
+  document.getElementById('street').value = index;
+  currentRoad = currentRoads[index];
+  if (roadLine) roadLine.remove();
+  roadLine = L.polyline(currentRoad.coords, {color: '#2563eb', weight: 4}).addTo(map);
+  checkReady();
+}
+
+document.getElementById('street').addEventListener('change', (e) => selectRoad(parseInt(e.target.value, 10)));
+
+async function loadParcel(lat, lng) {
+  const res = await fetch('/api/parcel', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({lat, lng})});
+  const data = await res.json();
+  if (parcelPoly) { parcelPoly.remove(); parcelPoly = null; }
+  if (data.parcel) {
+    parcelPoly = L.polygon(data.parcel.polygon, {color: '#ea580c', weight: 2, fillOpacity: 0.08}).addTo(map);
+  }
+}
+
+document.querySelectorAll('input[name="scope"]').forEach(el => el.addEventListener('change', checkReady));
+
+document.getElementById('generate-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('generate-status');
+  const scope = document.querySelector('input[name="scope"]:checked').value;
+  const payload = {
+    address: document.getElementById('address').value.trim(),
+    scope,
+    sidewalk: document.getElementById('sidewalk').checked,
+    parking: document.getElementById('parking').checked,
+    street: currentRoad ? currentRoad.name : null,
+    road_width_ft: document.getElementById('road_width').value || null,
+    posted_speed_mph: document.getElementById('posted_speed').value || null,
+    permit_number: document.getElementById('permit_number').value || null,
+    job_number: document.getElementById('job_number').value || null,
+    notes: document.getElementById('notes').value || null,
+  };
+  setStatus(statusEl, 'Generating...', false);
+  document.getElementById('generate-btn').disabled = true;
+  try {
+    const res = await fetch('/api/express', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const data = await res.json();
+    if (!res.ok) { setStatus(statusEl, data.error || 'Failed to generate', true); document.getElementById('generate-btn').disabled = false; return; }
+    window.location.href = data.redirect;
+  } catch (err) {
+    setStatus(statusEl, 'Failed: ' + err, true);
+    document.getElementById('generate-btn').disabled = false;
+  }
+});
+</script>
+{% endblock %}

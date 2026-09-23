@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Plan #{{ plan['id'] }} &mdash; tcpgen{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+{% endblock %}
+
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px;">
+  <div>
+    <h1 style="margin:0 0 4px 0;">{{ plan['address'] }}</h1>
+    <div style="color:#6b7280;">{{ plan['road_name'] }} &middot; {{ plan['scope'] }} &middot; TA {{ plan['ta_figure'] }}</div>
+  </div>
+  <a class="btn secondary" href="/">&larr; All plans</a>
+</div>
+
+{% if warnings %}
+<div class="card" style="background:#2d1f00; color:#fbbf24; margin-bottom:16px;">
+  <strong>Review before use:</strong>
+  <ul style="margin:8px 0 0 18px;">
+    {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div style="display:grid; grid-template-columns: 380px 1fr; gap:20px; align-items:start;">
+  <div class="card">
+    <h3 style="margin-top:0;">Plan details</h3>
+    <table style="width:100%; font-size:14px;">
+      <tr><td style="color:#6b7280; padding:4px 0;">Permit #</td><td>{{ plan['permit_number'] or '—' }}</td></tr>
+      <tr><td style="color:#6b7280; padding:4px 0;">Job #</td><td>{{ plan['job_number'] or '—' }}</td></tr>
+      <tr><td style="color:#6b7280; padding:4px 0;">Road</td><td>{{ plan['road_width_ft']|round(0) }} ft, {{ plan['posted_speed'] }} mph, {{ plan['road_lanes'] }} lanes</td></tr>
+      <tr><td style="color:#6b7280; padding:4px 0;">Frontage</td><td>{{ plan['frontage_source'] }}{% if plan['frontage_length_ft'] %} ({{ plan['frontage_length_ft']|round(0) }} ft){% endif %}</td></tr>
+    </table>
+
+    <button id="render-btn" class="btn" style="width:100%; margin-top:16px;">Generate PDF</button>
+    <div id="render-status" class="hint" style="font-size:12px; color:#6b7280; min-height:16px; margin-top:4px;"></div>
+    <div id="download-links" style="margin-top:10px;">
+      {% if plan['pdf_sheet1_path'] %}
+      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_sheet1_path'].split('/')[-1] }}" target="_blank">Sheet 1 &mdash; Close-Up</a>
+      <a class="btn secondary" style="display:block;" href="/out/{{ plan['pdf_sheet2_path'].split('/')[-1] }}" target="_blank">Sheet 2 &mdash; Wide Area</a>
+      {% endif %}
+    </div>
+
+    <h3 style="margin-top:20px;">Devices ({{ devices|length }})</h3>
+    <table style="width:100%; font-size:12px;">
+      <thead><tr style="text-align:left; color:#6b7280;"><th>Kind</th><th>Code</th><th>Station</th><th>Offset</th></tr></thead>
+      <tbody>
+      {% for d in devices %}
+        <tr><td>{{ d.kind }}</td><td>{{ d.code or '' }}</td><td>{{ d.station_ft|round(0) }}'</td><td>{{ d.offset_ft|round(1) }}'</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card" style="padding:0; overflow:hidden;">
+    <div id="map" style="height:640px;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const devices = {{ devices_json|safe }};
+const center = [{{ plan['center_lat'] }}, {{ plan['center_lng'] }}];
+const map = L.map('map').setView(center, 19);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'&copy; OpenStreetMap contributors', maxZoom:19}).addTo(map);
+
+const deviceColors = {cone:'#ea580c', sign:'#f59e0b', flagger:'#dc2626'};
+devices.forEach(d => {
+  L.circleMarker([d.lat, d.lng], {radius: d.kind==='cone'?4:6, color: deviceColors[d.kind]||'#6b7280', fillColor: deviceColors[d.kind]||'#6b7280', fillOpacity:0.9, weight:1})
+    .bindTooltip(d.code ? `${d.code} ${d.label||''}` : d.kind)
+    .addTo(map);
+});
+
+document.getElementById('render-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('render-status');
+  statusEl.textContent = 'Rendering...';
+  statusEl.style.color = '#6b7280';
+  const res = await fetch('/api/plan/{{ plan["id"] }}/render', {method:'POST'});
+  const data = await res.json();
+  if (!res.ok) { statusEl.textContent = data.error || 'Render failed'; statusEl.style.color = '#dc2626'; return; }
+  statusEl.textContent = 'Done.';
+  document.getElementById('download-links').innerHTML =
+    `<a class="btn secondary" style="display:block; margin-bottom:6px;" href="${data.sheet1_url}" target="_blank">Sheet 1 &mdash; Close-Up</a>` +
+    `<a class="btn secondary" style="display:block;" href="${data.sheet2_url}" target="_blank">Sheet 2 &mdash; Wide Area</a>`;
+});
+</script>
+{% endblock %}
