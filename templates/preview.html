@@ -42,9 +42,9 @@
     <div id="render-status" class="hint" style="font-size:12px; color:#6b7280; min-height:16px; margin-top:4px;"></div>
     <div id="download-links" style="margin-top:10px;">
       {% if plan['pdf_sheet1_path'] %}
-      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_notes_path'].split('/')[-1] }}" target="_blank">Sheet 0 &mdash; General Notes</a>
-      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_sheet1_path'].split('/')[-1] }}" target="_blank">Sheet 1 &mdash; Close-Up</a>
-      <a class="btn secondary" style="display:block;" href="/out/{{ plan['pdf_sheet2_path'].split('/')[-1] }}" target="_blank">Sheet 2 &mdash; Wide Area</a>
+      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_notes_path'].split('/')[-1] }}?v={{ plan['updated_at']|replace(' ', 'T') }}" target="_blank">Sheet 0 &mdash; General Notes</a>
+      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_sheet1_path'].split('/')[-1] }}?v={{ plan['updated_at']|replace(' ', 'T') }}" target="_blank">Sheet 1 &mdash; Close-Up</a>
+      <a class="btn secondary" style="display:block;" href="/out/{{ plan['pdf_sheet2_path'].split('/')[-1] }}?v={{ plan['updated_at']|replace(' ', 'T') }}" target="_blank">Sheet 2 &mdash; Wide Area</a>
       {% endif %}
     </div>
 

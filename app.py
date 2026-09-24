@@ -581,10 +581,13 @@ def api_render(plan_id: int):
         )
         log_audit(conn, plan_id, "web", "render", None)
 
+    # ?v= per render: every re-render overwrites the same dated filename,
+    # and Cloudflare/Chrome kept serving the stale copy under that URL.
+    v = int(os.path.getmtime(sheet1))
     return jsonify({
-        "notes_url": f"/out/{os.path.basename(notes)}",
-        "sheet1_url": f"/out/{os.path.basename(sheet1)}",
-        "sheet2_url": f"/out/{os.path.basename(sheet2)}",
+        "notes_url": f"/out/{os.path.basename(notes)}?v={v}",
+        "sheet1_url": f"/out/{os.path.basename(sheet1)}?v={v}",
+        "sheet2_url": f"/out/{os.path.basename(sheet2)}?v={v}",
     })
 
 
