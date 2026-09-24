@@ -139,6 +139,21 @@ def test_choose_road_tie_breaks_on_street_hint():
     assert chosen.name == "Oak Ave"
 
 
+def test_choose_road_street_hint_beats_a_nearer_road():
+    # Corner lot: the operator picked the farther street -- honor it.
+    near = RoadSegment(1, "Glennan Drive", [(37.6300, -122.4120), (37.6301, -122.4119)], 36, 2, 25, False, "residential")
+    far = RoadSegment(2, "Castle Hill Road", [(37.6310, -122.4130), (37.6311, -122.4129)], 36, 2, 25, False, "residential")
+    chosen = choose_road([near, far], 37.6300, -122.4120, street_hint="Castle Hill Road")
+    assert chosen.name == "Castle Hill Road"
+
+
+def test_choose_road_unmatched_street_hint_falls_back_to_nearest():
+    near = RoadSegment(1, "Near St", [(37.6300, -122.4120), (37.6301, -122.4119)], 36, 2, 25, False, "residential")
+    far = RoadSegment(2, "Far St", [(37.6400, -122.4220), (37.6401, -122.4219)], 36, 2, 25, False, "residential")
+    chosen = choose_road([far, near], 37.6300, -122.4120, street_hint="Nowhere Blvd")
+    assert chosen.name == "Near St"
+
+
 def test_choose_road_tie_breaks_on_highway_class():
     coords = [(37.6300, -122.4120), (37.6301, -122.4119)]
     a = RoadSegment(1, "A St", coords, 36, 2, 25, False, "residential")

@@ -249,23 +249,35 @@ def choose_road(
     *,
     street_hint: Optional[str] = None,
 ) -> RoadSegment:
-    """spec §5.2 ranking: nearest wins, tie-break on a name match to
-    `street_hint`, then on higher highway class. This never silently
-    guesses at an intersection beyond picking the top-ranked candidate —
-    the caller (web layer, later phase) is responsible for showing the
-    other candidates in a dropdown."""
+    """spec §5.2 ranking: nearest wins, tie-break on higher highway class.
+    A `street_hint` is the operator's explicit Street-dropdown pick, so it
+    is a filter, not a tie-break: only roads with that name are ranked
+    (exact name first, then substring), falling back to every candidate
+    only if nothing matches. As a mere tie-break it lost to distance on
+    corner lots -- 997 Glennan Dr (2026-09-24): Castle Hill Rd was picked
+    and a work area drawn on it, but Glennan was nearer the geocoded
+    point, so the whole plan was built along Glennan instead."""
     if not candidates:
         raise RoadNotFoundError("No candidate roads to choose from")
 
-    def rank(road: RoadSegment) -> tuple[float, int, int]:
+    if street_hint:
+        hint = street_hint.strip().lower()
+        pool = (
+            [r for r in candidates if r.name.lower() == hint]
+            or [r for r in candidates if hint in r.name.lower()]
+            or candidates
+        )
+    else:
+        pool = candidates
+
+    def rank(road: RoadSegment) -> tuple[float, int]:
         # Round to treat near-ties as ties instead of always falling
         # through to distance as the sole tiebreak.
         dist = round(_perpendicular_distance_m(lat, lng, road.coords), 1)
-        name_match = 0 if (street_hint and street_hint.lower() in road.name.lower()) else 1
         class_rank = -HIGHWAY_CLASSES.index(road.highway) if road.highway in HIGHWAY_CLASSES else 0
-        return (dist, name_match, class_rank)
+        return (dist, class_rank)
 
-    return sorted(candidates, key=rank)[0]
+    return sorted(pool, key=rank)[0]
 
 
 # ---- side-street signage (spec via reference plan, General Note 8) --------
