@@ -6,7 +6,7 @@ from pypdf import PdfReader
 from core.geocode import GeocodeResult
 from core.geometry import Centerline
 from core.layout import build_device_plan, default_work_area
-from core.render_pdf import BANNED_PHRASE, render_plan_pdfs, sheet_filenames
+from core.render_pdf import BANNED_PHRASE, GENERAL_NOTES, render_plan_pdfs, sheet_filenames
 from core.roads import RoadSegment
 from core.rules import Scope, get_ta_figure, load_ta_figures
 
@@ -29,30 +29,42 @@ def _plan(scope=Scope.BEHIND_CURB, sidewalk=False):
 
 def test_sheet_filenames_match_the_spec_convention():
     date = dt.date(2026, 9, 23)
-    s1, s2 = sheet_filenames("157 San Marco Ave, San Bruno CA", date=date)
+    s0, s1, s2 = sheet_filenames("157 San Marco Ave, San Bruno CA", date=date)
+    assert s0 == "2026-09-23 — TCP Sheet 0 General Notes — 157 San Marco Ave.pdf"
     assert s1 == "2026-09-23 — TCP Sheet 1 Close-Up — 157 San Marco Ave.pdf"
     assert s2 == "2026-09-23 — TCP Sheet 2 Wide Area — 157 San Marco Ave.pdf"
 
 
 def test_sheet_filenames_strip_everything_after_the_first_comma():
-    s1, _s2 = sheet_filenames("123 Main St, Some City, CA 94000", date=dt.date(2026, 1, 1))
+    s0, s1, _s2 = sheet_filenames("123 Main St, Some City, CA 94000", date=dt.date(2026, 1, 1))
     assert "Some City" not in s1
     assert "123 Main St" in s1
+    assert "Some City" not in s0
 
 
 # ---- rendered PDF content ---------------------------------------------------
 
 
-def test_render_produces_two_readable_pdfs(tmp_path):
+def test_render_produces_three_readable_pdfs(tmp_path):
     geo, road, work_area, ta_figure, devices, warnings = _plan()
-    s1_path, s2_path = render_plan_pdfs(
+    notes_path, s1_path, s2_path = render_plan_pdfs(
         "157 Test St, Testville CA", geo, road, work_area, Scope.BEHIND_CURB, ta_figure, devices, warnings, str(tmp_path)
     )
 
+    r0 = PdfReader(notes_path)
     r1 = PdfReader(s1_path)
     r2 = PdfReader(s2_path)
+    assert len(r0.pages) == 1
     assert len(r1.pages) == 1
     assert len(r2.pages) == 1
+
+    text0 = r0.pages[0].extract_text()
+    assert "GENERAL NOTES" in text0
+    assert "TRAFFIC CONTROL PLAN" in text0
+    for note in GENERAL_NOTES:
+        # Wrapped across lines in the PDF, so check a distinctive prefix
+        # rather than the whole sentence.
+        assert note.split(".")[0][:20] in text0
 
     text1 = r1.pages[0].extract_text()
     assert "TRAFFIC CONTROL PLAN" in text1
@@ -61,20 +73,20 @@ def test_render_produces_two_readable_pdfs(tmp_path):
 
 
 def test_pdf_never_contains_the_banned_phrase(tmp_path):
-    """spec §10.5: hard requirement, both scopes, both sheets."""
+    """spec §10.5: hard requirement, every scope, every sheet."""
     for scope in (Scope.BEHIND_CURB, Scope.ONE_LANE):
         geo, road, work_area, ta_figure, devices, warnings = _plan(scope=scope, sidewalk=True)
-        s1_path, s2_path = render_plan_pdfs(
+        notes_path, s1_path, s2_path = render_plan_pdfs(
             f"157 Test St {scope.value}, Testville CA", geo, road, work_area, scope, ta_figure, devices, warnings, str(tmp_path)
         )
-        for path in (s1_path, s2_path):
+        for path in (notes_path, s1_path, s2_path):
             text = PdfReader(path).pages[0].extract_text().lower()
             assert BANNED_PHRASE not in text
 
 
 def test_draft_badge_is_the_only_draft_marker_text_present(tmp_path):
     geo, road, work_area, ta_figure, devices, warnings = _plan()
-    s1_path, _s2 = render_plan_pdfs(
+    _notes, s1_path, _s2 = render_plan_pdfs(
         "157 Test St, Testville CA", geo, road, work_area, Scope.BEHIND_CURB, ta_figure, devices, warnings, str(tmp_path)
     )
     text = PdfReader(s1_path).pages[0].extract_text()
@@ -85,20 +97,54 @@ def test_render_creates_out_dir_if_missing(tmp_path):
     geo, road, work_area, ta_figure, devices, warnings = _plan()
     out_dir = tmp_path / "nested" / "out"
     assert not out_dir.exists()
-    s1_path, s2_path = render_plan_pdfs(
+    notes_path, s1_path, s2_path = render_plan_pdfs(
         "157 Test St, Testville CA", geo, road, work_area, Scope.BEHIND_CURB, ta_figure, devices, warnings, str(out_dir)
     )
     assert out_dir.exists()
     import os
 
+    assert os.path.exists(notes_path)
     assert os.path.exists(s1_path)
     assert os.path.exists(s2_path)
 
 
 def test_render_one_lane_scope_does_not_crash_and_has_flagger_marker(tmp_path):
     geo, road, work_area, ta_figure, devices, warnings = _plan(scope=Scope.ONE_LANE)
-    s1_path, s2_path = render_plan_pdfs(
+    notes_path, s1_path, s2_path = render_plan_pdfs(
         "157 Test St, Testville CA", geo, road, work_area, Scope.ONE_LANE, ta_figure, devices, warnings, str(tmp_path)
     )
+    assert PdfReader(notes_path).pages
     assert PdfReader(s1_path).pages
     assert PdfReader(s2_path).pages
+
+
+def test_sign_labels_measure_from_the_work_area():
+    from core.layout import WorkArea
+    from core.render_pdf import _work_area_distance_text
+
+    wa = WorkArea(start_station_ft=1713, end_station_ft=1748, near_offset_ft=12, far_offset_ft=20, side=1)
+    assert _work_area_distance_text(1513, wa) == "200'"
+    assert _work_area_distance_text(1948, wa) == "200'"
+    assert _work_area_distance_text(1730, wa) == "at work area"
+    assert _work_area_distance_text(1713, wa) == "at work area"
+
+
+def test_sidewalk_package_labels_span_the_map(tmp_path):
+    # Regression (997 Castle Hill Rd, 2026-09-24): drawing a barricade
+    # reused the map frame's w/h names, so every stacked label and leader
+    # collapsed into the frame's bottom-left corner. Labels must spread
+    # across the sheet, not sit within a few points of each other.
+    geo, road, work_area, ta_figure, devices, warnings = _plan(sidewalk=True)
+    assert any(d.kind == "barricade" for d in devices)
+    _notes, sheet1, _sheet2 = render_plan_pdfs(
+        geo.display_name, geo, road, work_area, Scope.BEHIND_CURB, ta_figure, devices, warnings, str(tmp_path)
+    )
+    xs = []
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if text.strip() and ("'" in text or "at work area" in text) and font_size and font_size < 6:
+            xs.append(tm[4])
+
+    PdfReader(sheet1).pages[0].extract_text(visitor_text=visitor)
+    assert len(xs) >= 2
+    assert max(xs) - min(xs) > 200

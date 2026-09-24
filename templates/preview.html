@@ -13,6 +13,7 @@
   </div>
   <div>
     <a class="btn secondary" href="/">&larr; All plans</a>
+    <a class="btn secondary" href="/plan/{{ plan['id'] }}/edit" style="margin-left:8px;">Edit</a>
     <a href="#" onclick="deleteThisPlan(); return false;" style="color:#dc2626; margin-left:14px; font-size:13px;">Delete plan</a>
   </div>
 </div>
@@ -30,6 +31,7 @@
   <div class="card">
     <h3 style="margin-top:0;">Plan details</h3>
     <table style="width:100%; font-size:14px;">
+      {% if plan['job_type'] %}<tr><td style="color:#6b7280; padding:4px 0;">Job Type</td><td>{{ plan['job_type'].split(',')|map('capitalize')|join(', ') }}</td></tr>{% endif %}
       <tr><td style="color:#6b7280; padding:4px 0;">Permit #</td><td>{{ plan['permit_number'] or '—' }}</td></tr>
       <tr><td style="color:#6b7280; padding:4px 0;">Job #</td><td>{{ plan['job_number'] or '—' }}</td></tr>
       <tr><td style="color:#6b7280; padding:4px 0;">Road</td><td>{{ plan['road_width_ft']|round(0) }} ft, {{ plan['posted_speed'] }} mph, {{ plan['road_lanes'] }} lanes</td></tr>
@@ -40,6 +42,7 @@
     <div id="render-status" class="hint" style="font-size:12px; color:#6b7280; min-height:16px; margin-top:4px;"></div>
     <div id="download-links" style="margin-top:10px;">
       {% if plan['pdf_sheet1_path'] %}
+      <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_notes_path'].split('/')[-1] }}" target="_blank">Sheet 0 &mdash; General Notes</a>
       <a class="btn secondary" style="display:block; margin-bottom:6px;" href="/out/{{ plan['pdf_sheet1_path'].split('/')[-1] }}" target="_blank">Sheet 1 &mdash; Close-Up</a>
       <a class="btn secondary" style="display:block;" href="/out/{{ plan['pdf_sheet2_path'].split('/')[-1] }}" target="_blank">Sheet 2 &mdash; Wide Area</a>
       {% endif %}
@@ -70,11 +73,63 @@ const center = [{{ plan['center_lat'] }}, {{ plan['center_lng'] }}];
 const map = L.map('map').setView(center, 19);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'&copy; OpenStreetMap contributors', maxZoom:19}).addTo(map);
 
-const deviceColors = {cone:'#ea580c', sign:'#f59e0b', flagger:'#dc2626'};
+L.marker(center).addTo(map).bindTooltip('Geocoded address');
+
+{% if plan["parcel_polygon"] %}
+(function () {
+  const parcelGeo = {{ plan["parcel_polygon"]|safe }};
+  const ring = parcelGeo.coordinates[0].map(([lng, lat]) => [lat, lng]);
+  L.polygon(ring, {color: '#ea580c', weight: 2, fillOpacity: 0.08}).addTo(map);
+  const cLat = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+  const cLng = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+  const jobSiteIcon = L.divIcon({
+    className: 'job-site-pin',
+    html: '<div style="width:22px;height:22px;border-radius:50% 50% 50% 0;background:#16a34a;border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 3px rgba(0,0,0,0.5);"></div>',
+    iconSize: [22, 22],
+    iconAnchor: [11, 22],
+  });
+  L.marker([cLat, cLng], {icon: jobSiteIcon}).addTo(map).bindTooltip('Job site \u2014 {{ plan["address"] }}');
+})();
+{% endif %}
+
+// Shapes match render_pdf.py's core.render_pdf._device_fill_and_border /
+// the diamond sign / striped barricade drawing -- so the interactive
+// preview looks like the PDF it produces instead of every device being
+// an undifferentiated dot.
+const WARN_FILL = '#f59e0b', WARN_BORDER = '#78350f', REG_BORDER = '#111111';
+const WORK_ZONE = '#ea580c', FLAGGER_COLOR = '#dc2626';
+
+function deviceIcon(d) {
+  if (d.kind === 'sign') {
+    const isReg = d.code && d.code.startsWith('R9');
+    const fill = isReg ? '#ffffff' : WARN_FILL;
+    const border = isReg ? REG_BORDER : WARN_BORDER;
+    return L.divIcon({
+      className: 'device-sign-icon',
+      html: '<div style="width:14px;height:14px;background:' + fill + ';border:2px solid ' + border + ';transform:rotate(45deg);box-shadow:0 1px 2px rgba(0,0,0,0.4);"></div>',
+      iconSize: [14, 14], iconAnchor: [7, 7],
+    });
+  }
+  if (d.kind === 'barricade') {
+    return L.divIcon({
+      className: 'device-barricade-icon',
+      html: '<div style="width:16px;height:8px;background:repeating-linear-gradient(135deg, ' + WORK_ZONE + ' 0 3px, #fff 3px 6px);border:1.5px solid ' + REG_BORDER + ';"></div>',
+      iconSize: [16, 8], iconAnchor: [8, 4],
+    });
+  }
+  return null;
+}
+
 devices.forEach(d => {
-  L.circleMarker([d.lat, d.lng], {radius: d.kind==='cone'?4:6, color: deviceColors[d.kind]||'#6b7280', fillColor: deviceColors[d.kind]||'#6b7280', fillOpacity:0.9, weight:1})
-    .bindTooltip(d.code ? `${d.code} ${d.label||''}` : d.kind)
-    .addTo(map);
+  const tooltip = d.code ? `${d.code} ${d.label||''}` : d.kind;
+  const icon = deviceIcon(d);
+  if (icon) {
+    L.marker([d.lat, d.lng], {icon}).bindTooltip(tooltip).addTo(map);
+  } else {
+    const color = d.kind === 'flagger' ? FLAGGER_COLOR : WORK_ZONE;
+    L.circleMarker([d.lat, d.lng], {radius: d.kind==='cone'?4:6, color, fillColor: color, fillOpacity:0.9, weight:1})
+      .bindTooltip(tooltip).addTo(map);
+  }
 });
 
 document.getElementById('render-btn').addEventListener('click', async () => {
@@ -86,6 +141,7 @@ document.getElementById('render-btn').addEventListener('click', async () => {
   if (!res.ok) { statusEl.textContent = data.error || 'Render failed'; statusEl.style.color = '#dc2626'; return; }
   statusEl.textContent = 'Done.';
   document.getElementById('download-links').innerHTML =
+    `<a class="btn secondary" style="display:block; margin-bottom:6px;" href="${data.notes_url}" target="_blank">Sheet 0 &mdash; General Notes</a>` +
     `<a class="btn secondary" style="display:block; margin-bottom:6px;" href="${data.sheet1_url}" target="_blank">Sheet 1 &mdash; Close-Up</a>` +
     `<a class="btn secondary" style="display:block;" href="${data.sheet2_url}" target="_blank">Sheet 2 &mdash; Wide Area</a>`;
 });

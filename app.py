@@ -1,13 +1,15 @@
 """Flask routes (spec §11) — thin. All real logic lives in core/; this
 file just wires HTTP <-> those functions <-> db.py.
 
-Phase 4 scope (this pass): the Express-mode flow end to end — form, live
-map (pin/road/parcel), generate, preview, render PDF. Deliberately NOT
-built yet, per spec's own "optional draw tool and reference-image upload
-last": device dragging (PATCH /api/device/<id>), POST /api/plan/<id>/
-regenerate, the Leaflet.draw polygon tool, and POST /api/plan/<id>/
-reference. No authentication either — this sits on the same VPS as the
-portal but isn't gated by it.
+Phase 4 scope: the Express-mode flow end to end — form, live map
+(pin/road/parcel), generate, preview, render PDF. Later additions: an
+edit-in-place flow (POST /api/plan/<id>/regenerate), a Job/PO address
+picker backed by the portal's internal API, and the Leaflet.draw
+work-area polygon tool (an optional manual override -- see
+core.layout.work_area_from_polygon). Still not built: device dragging
+(PATCH /api/device/<id>) and POST /api/plan/<id>/reference. No
+authentication either — this sits on the same VPS as the portal but
+isn't gated by it.
 """
 
 from __future__ import annotations
@@ -15,13 +17,23 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+import requests
+
+import config
 
 from core.geocode import GeocodeError, geocode_address
 from core.geometry import Centerline
-from core.layout import Device, advance_warning_window, build_device_plan, default_work_area
+from core.layout import (
+    Device,
+    advance_warning_window,
+    build_device_plan,
+    default_work_area,
+    work_area_from_polygon,
+)
 from core.parcels import Parcel, SanMateoArcGIS, detect_corner_lot, frontage_length_ft, is_implausible_frontage
 from core.render_pdf import render_plan_pdfs
 from core.roads import (
@@ -45,11 +57,27 @@ from db import get_conn, init_db, log_audit
 BASE_DIR = Path(__file__).resolve().parent
 OUT_DIR = BASE_DIR / "out"
 
+# Job type is a separate label from `scope` (Behind Curb/Shoulder/One Lane/
+# Cul-de-sac), not a replacement for it -- a Trench job, for instance, can
+# legitimately be any of those scopes depending on the specific job, so this
+# is purely a categorization/labeling field, never used to restrict or
+# infer the scope picker.
+JOB_TYPES = ("trench", "sidewalk", "apron", "street")
+
 app = Flask(__name__)
 init_db()
 
 
 # ---- helpers: dataclass <-> GeoJSON <-> DB row -----------------------------
+
+
+def _house_number(address: str) -> str | None:
+    """Leading digits of a typed address ("635 Costa Rica Ave" -> "635"),
+    used to cross-check a geocoded point against the county's own SITUS_ADDR
+    data (core.parcels.SanMateoArcGIS.parcel_for_address) -- a geocoder's
+    interpolated point can land inside the wrong neighboring parcel."""
+    m = re.match(r"\s*(\d+)", address)
+    return m.group(1) if m else None
 
 
 def _linestring_geojson(coords_latlng: list[tuple[float, float]]) -> str:
@@ -109,14 +137,23 @@ def _load_devices(conn, plan_id: int) -> list[Device]:
 def index():
     with get_conn() as conn:
         plans = conn.execute(
-            "SELECT id, created_at, address, scope, ta_figure, status FROM plan ORDER BY created_at DESC"
+            "SELECT id, created_at, job_type, address, scope, ta_figure, status FROM plan ORDER BY created_at DESC"
         ).fetchall()
     return render_template("index.html", plans=plans)
 
 
 @app.route("/plan/new")
 def plan_new():
-    return render_template("express.html")
+    return render_template("express.html", edit_plan=None)
+
+
+@app.route("/plan/<int:plan_id>/edit")
+def plan_edit(plan_id: int):
+    with get_conn() as conn:
+        plan_row = conn.execute("SELECT * FROM plan WHERE id=?", (plan_id,)).fetchone()
+        if plan_row is None:
+            abort(404)
+    return render_template("express.html", edit_plan=dict(plan_row))
 
 
 @app.route("/plan/<int:plan_id>/preview")
@@ -177,34 +214,76 @@ def api_roads():
     return jsonify({"roads": [_road_to_dict(r) for r in roads]})
 
 
+@app.route("/api/portal-jobs")
+def api_portal_jobs():
+    """Proxies the Mi RoC portal's active Job/PO address list so the
+    shared internal token never reaches the browser -- same reasoning as
+    the portal's own job_quote() JobTable-credential proxy. Failure here
+    (portal down, token unset) degrades to an empty list, never an error
+    page -- manual address entry always still works."""
+    if not config.PORTAL_INTERNAL_TOKEN:
+        return jsonify({"jobs": []})
+    try:
+        r = requests.post(
+            config.PORTAL_JOBS_URL,
+            headers={"X-Internal-Token": config.PORTAL_INTERNAL_TOKEN},
+            json={}, timeout=8,
+        )
+        r.raise_for_status()
+        jobs = (r.json() or {}).get("jobs", [])
+    except requests.RequestException:
+        jobs = []
+    return jsonify({"jobs": jobs})
+
+
 @app.route("/api/parcel", methods=["POST"])
 def api_parcel():
     data = request.get_json(force=True) or {}
     lat, lng = data.get("lat"), data.get("lng")
     if lat is None or lng is None:
         return jsonify({"error": "lat and lng are required"}), 400
-    parcel = SanMateoArcGIS().parcel_at(float(lat), float(lng))
+    address = data.get("address") or ""
+    parcel = SanMateoArcGIS().parcel_for_address(float(lat), float(lng), house_number=_house_number(address))
     if parcel is None:
         return jsonify({"parcel": None})
+    centroid_lat = sum(p[0] for p in parcel.polygon) / len(parcel.polygon)
+    centroid_lng = sum(p[1] for p in parcel.polygon) / len(parcel.polygon)
     return jsonify(
-        {"parcel": {"apn": parcel.apn, "situs_address": parcel.situs_address, "polygon": [[lat, lng] for lat, lng in parcel.polygon]}}
+        {"parcel": {
+            "apn": parcel.apn, "situs_address": parcel.situs_address,
+            "polygon": [[lat, lng] for lat, lng in parcel.polygon],
+            "centroid": [centroid_lat, centroid_lng],
+        }}
     )
 
 
 # ---- API: create + read a plan --------------------------------------------
 
 
-@app.route("/api/express", methods=["POST"])
-def api_express():
-    data = request.get_json(force=True) or {}
+class _PlanBuildError(Exception):
+    """Carries the right HTTP status code alongside the message, so both
+    create and regenerate can raise from the same shared pipeline and each
+    just re-wrap it as its own jsonify() response."""
+
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _build_plan_from_payload(data: dict) -> dict:
+    """The full geocode -> road -> parcel -> work_area -> ta_figure ->
+    cross_streets -> devices pipeline, shared by plan creation (api_express)
+    and plan editing (api_plan_regenerate) -- one code path for "here are
+    the inputs, build the plan," regardless of whether the result becomes
+    a new row or replaces an existing one."""
     address = (data.get("address") or "").strip()
     scope_str = data.get("scope")
     if not address or not scope_str:
-        return jsonify({"error": "address and scope are required"}), 400
+        raise _PlanBuildError("address and scope are required")
     try:
         scope = Scope(scope_str)
     except ValueError:
-        return jsonify({"error": f"invalid scope {scope_str!r}"}), 400
+        raise _PlanBuildError(f"invalid scope {scope_str!r}")
 
     sidewalk = bool(data.get("sidewalk"))
     parking = bool(data.get("parking"))
@@ -213,16 +292,37 @@ def api_express():
     job_number = data.get("job_number") or None
     notes = data.get("notes") or None
 
+    # Job Type is multi-select (2026-09-24) -- a real job is often more
+    # than one of Trench/Sidewalk/Apron/Street at once (Michael: "sometimes
+    # all of the above"). Stored as a comma-joined string in the single
+    # `job_type` TEXT column rather than a schema change -- display code
+    # (templates, render_pdf.py) splits it back apart.
+    job_type_list = data.get("job_type") or []
+    if isinstance(job_type_list, str):
+        job_type_list = [job_type_list] if job_type_list else []
+    invalid = [jt for jt in job_type_list if jt not in JOB_TYPES]
+    if invalid:
+        raise _PlanBuildError(f"invalid job_type {invalid!r} (allowed: {', '.join(JOB_TYPES)})")
+    job_type = ",".join(job_type_list) if job_type_list else None
+
+    raw_polygon = data.get("work_area_polygon")
+    work_area_polygon = None
+    if raw_polygon and len(raw_polygon) >= 3:
+        try:
+            work_area_polygon = [(float(p[0]), float(p[1])) for p in raw_polygon]
+        except (TypeError, ValueError, IndexError):
+            raise _PlanBuildError("invalid work_area_polygon")
+
     try:
         geo = geocode_address(address)
     except GeocodeError as exc:
-        return jsonify({"error": str(exc)}), 422
+        raise _PlanBuildError(str(exc), 422)
 
     try:
         roads = find_roads_near(geo.lat, geo.lng)
         road = choose_road(roads, geo.lat, geo.lng, street_hint=street_hint)
     except RoadNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 422
+        raise _PlanBuildError(str(exc), 422)
 
     if data.get("road_width_ft"):
         road.width_ft = float(data["road_width_ft"])
@@ -230,24 +330,35 @@ def api_express():
         road.speed_mph = int(data["posted_speed_mph"])
 
     centerline = Centerline(road.coords)
-    parcel = SanMateoArcGIS().parcel_at(geo.lat, geo.lng)
+    parcel = SanMateoArcGIS().parcel_for_address(geo.lat, geo.lng, house_number=_house_number(address))
     corner_lot = bool(parcel and detect_corner_lot(parcel, roads))
 
     warnings: list[str] = []
-    if parcel is None:
+    if work_area_polygon:
+        # Operator drew the footprint directly -- this is the deliberate
+        # fix for a bad auto-guess, so skip the parcel-quality warnings
+        # below; they'd just be noise once the operator has already
+        # visually confirmed placement.
+        frontage_source = "drawn"
+    elif parcel is None:
         warnings.append("No parcel found — using a 60 ft default frontage. Adjust the length or draw the work area.")
+        frontage_source = "default"
     else:
         if is_implausible_frontage(parcel, centerline):
             warnings.append("Frontage on this street is implausibly long (>250 ft) — likely a corner lot; confirm the fronting street.")
         if corner_lot:
             warnings.append("Parcel touches 2+ candidate streets within 15 ft — confirm the fronting street before generating.")
+        frontage_source = "parcel"
 
-    work_area = default_work_area(parcel, centerline, road, scope, (geo.lat, geo.lng))
+    if work_area_polygon:
+        work_area = work_area_from_polygon(work_area_polygon, centerline)
+    else:
+        work_area = default_work_area(parcel, centerline, road, scope, (geo.lat, geo.lng))
 
     try:
         ta_figure = get_ta_figure(scope, load_ta_figures())
     except (ScopeNotSupportedError, TaFigureNotBuiltError) as exc:
-        return jsonify({"error": str(exc)}), 422
+        raise _PlanBuildError(str(exc), 422)
 
     station_min, station_max = advance_warning_window(work_area, ta_figure, road.speed_mph)
     # A dedicated, full-radius candidate pool -- `roads` (find_roads_near's
@@ -263,40 +374,121 @@ def api_express():
     if sidewalk:
         warnings.append(PEDESTRIAN_NOTE)
 
-    frontage_len = frontage_length_ft(parcel, centerline) if parcel else None
+    if work_area_polygon:
+        frontage_len = work_area.end_station_ft - work_area.start_station_ft
+    else:
+        frontage_len = frontage_length_ft(parcel, centerline) if parcel else None
+
+    return {
+        "job_type": job_type, "address": address, "geo": geo, "road": road, "parcel": parcel,
+        "scope": scope, "sidewalk": sidewalk, "parking": parking, "permit_number": permit_number,
+        "job_number": job_number, "notes": notes, "ta_figure": ta_figure, "devices": devices,
+        "warnings": warnings, "corner_lot": corner_lot, "frontage_len": frontage_len,
+        "work_area_polygon": work_area_polygon, "frontage_source": frontage_source,
+    }
+
+
+def _plan_write_params(b: dict) -> tuple:
+    """Column values in the same order for both the INSERT (create) and
+    UPDATE (regenerate) statements below -- keeps the two from silently
+    drifting apart."""
+    return (
+        b["job_type"], b["address"], b["geo"].city, b["geo"].zip,
+        b["permit_number"], b["job_number"], b["geo"].lat, b["geo"].lng,
+        _polygon_geojson(b["work_area_polygon"]) if b.get("work_area_polygon") else None,
+        b["notes"],
+        b["scope"].value, int(b["sidewalk"]), int(b["parking"]), b["road"].speed_mph, b["ta_figure"].key,
+        b["road"].osm_id, b["road"].name, _linestring_geojson(b["road"].coords), b["road"].width_ft, b["road"].lanes,
+        b["parcel"].apn if b["parcel"] else None, _polygon_geojson(b["parcel"].polygon) if b["parcel"] else None,
+        b["frontage_source"], b["frontage_len"], int(b["corner_lot"]),
+    )
+
+
+def _insert_devices(conn, plan_id: int, devices: list[Device]) -> None:
+    for d in devices:
+        conn.execute(
+            """INSERT INTO device (plan_id, kind, code, label, station_ft, offset_ft, lat, lng, approach, seq, locked)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            (plan_id, d.kind, d.code, d.label, d.station_ft, d.offset_ft, d.lat, d.lng, d.approach, d.seq),
+        )
+
+
+@app.route("/api/express", methods=["POST"])
+def api_express():
+    data = request.get_json(force=True) or {}
+    try:
+        b = _build_plan_from_payload(data)
+    except _PlanBuildError as exc:
+        return jsonify({"error": str(exc)}), exc.status_code
 
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO plan (
-                created_at, updated_at, status, address, city, state, zip, jurisdiction,
+                created_at, updated_at, status, job_type, address, city, state, zip, jurisdiction,
                 permit_number, job_number, center_lat, center_lng, work_polygon, work_description,
                 scope, sidewalk_affected, parking_affected, duration, posted_speed, ta_figure,
                 road_osm_id, road_name, road_geometry, road_width_ft, road_lanes, road_bearing_deg,
                 parcel_apn, parcel_polygon, frontage_source, frontage_length_ft, corner_lot
-            ) VALUES (datetime('now'), datetime('now'), 'draft', ?, ?, 'CA', ?, NULL,
-                ?, ?, ?, ?, NULL, ?,
+            ) VALUES (datetime('now'), datetime('now'), 'draft', ?, ?, ?, 'CA', ?, NULL,
+                ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, 'short_term', ?, ?,
                 ?, ?, ?, ?, ?, NULL,
                 ?, ?, ?, ?, ?)""",
-            (
-                address, geo.city, geo.zip,
-                permit_number, job_number, geo.lat, geo.lng, notes,
-                scope.value, int(sidewalk), int(parking), road.speed_mph, ta_figure.key,
-                road.osm_id, road.name, _linestring_geojson(road.coords), road.width_ft, road.lanes,
-                parcel.apn if parcel else None, _polygon_geojson(parcel.polygon) if parcel else None,
-                "parcel" if parcel else "default", frontage_len, int(corner_lot),
-            ),
+            _plan_write_params(b),
         )
         plan_id = cur.lastrowid
-        for d in devices:
-            conn.execute(
-                """INSERT INTO device (plan_id, kind, code, label, station_ft, offset_ft, lat, lng, approach, seq, locked)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-                (plan_id, d.kind, d.code, d.label, d.station_ft, d.offset_ft, d.lat, d.lng, d.approach, d.seq),
-            )
-        log_audit(conn, plan_id, "web", "create", json.dumps({"warnings": warnings}))
+        _insert_devices(conn, plan_id, b["devices"])
+        log_audit(conn, plan_id, "web", "create", json.dumps({"warnings": b["warnings"]}))
 
-    return jsonify({"id": plan_id, "redirect": f"/plan/{plan_id}/preview", "warnings": warnings})
+    return jsonify({"id": plan_id, "redirect": f"/plan/{plan_id}/preview", "warnings": b["warnings"]})
+
+
+@app.route("/api/plan/<int:plan_id>/regenerate", methods=["POST"])
+def api_plan_regenerate(plan_id: int):
+    """Edits a plan in place: re-runs the full build pipeline against new
+    inputs (address/scope/etc. can all change) and replaces the existing
+    plan row + its device rows, rather than creating a new plan. Any
+    previously rendered PDFs are stale the moment the devices change, so
+    they're deleted and cleared -- the preview page's Generate PDF button
+    is what re-creates them."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT pdf_notes_path, pdf_sheet1_path, pdf_sheet2_path FROM plan WHERE id=?", (plan_id,)
+        ).fetchone()
+        if row is None:
+            abort(404)
+        old_pdf_paths = (row["pdf_notes_path"], row["pdf_sheet1_path"], row["pdf_sheet2_path"])
+
+    data = request.get_json(force=True) or {}
+    try:
+        b = _build_plan_from_payload(data)
+    except _PlanBuildError as exc:
+        return jsonify({"error": str(exc)}), exc.status_code
+
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE plan SET
+                job_type=?, address=?, city=?, zip=?,
+                permit_number=?, job_number=?, center_lat=?, center_lng=?, work_polygon=?, work_description=?,
+                scope=?, sidewalk_affected=?, parking_affected=?, posted_speed=?, ta_figure=?,
+                road_osm_id=?, road_name=?, road_geometry=?, road_width_ft=?, road_lanes=?,
+                parcel_apn=?, parcel_polygon=?, frontage_source=?, frontage_length_ft=?, corner_lot=?,
+                pdf_notes_path=NULL, pdf_sheet1_path=NULL, pdf_sheet2_path=NULL, updated_at=datetime('now')
+               WHERE id=?""",
+            (*_plan_write_params(b), plan_id),
+        )
+        conn.execute("DELETE FROM device WHERE plan_id=?", (plan_id,))
+        _insert_devices(conn, plan_id, b["devices"])
+        log_audit(conn, plan_id, "web", "regenerate", json.dumps({"warnings": b["warnings"]}))
+
+    for path in old_pdf_paths:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    return jsonify({"id": plan_id, "redirect": f"/plan/{plan_id}/preview", "warnings": b["warnings"]})
 
 
 @app.route("/api/plan/<int:plan_id>", methods=["GET"])
@@ -330,11 +522,11 @@ def api_update_plan(plan_id: int):
 def api_delete_plan(plan_id: int):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT pdf_sheet1_path, pdf_sheet2_path FROM plan WHERE id=?", (plan_id,)
+            "SELECT pdf_notes_path, pdf_sheet1_path, pdf_sheet2_path FROM plan WHERE id=?", (plan_id,)
         ).fetchone()
         if row is None:
             abort(404)
-        for path in (row["pdf_sheet1_path"], row["pdf_sheet2_path"]):
+        for path in (row["pdf_notes_path"], row["pdf_sheet1_path"], row["pdf_sheet2_path"]):
             if path:
                 try:
                     os.remove(path)
@@ -359,26 +551,36 @@ def api_render(plan_id: int):
     parcel = _parcel_from_plan_row(plan_row)
     centerline = Centerline(road.coords)
     scope = Scope(plan_row["scope"])
-    work_area = default_work_area(parcel, centerline, road, scope, (plan_row["center_lat"], plan_row["center_lng"]))
+    if plan_row["work_polygon"]:
+        ring = json.loads(plan_row["work_polygon"])["coordinates"][0]
+        drawn_polygon = [(lat, lng) for lng, lat in ring]
+        work_area = work_area_from_polygon(drawn_polygon, centerline)
+    else:
+        work_area = default_work_area(parcel, centerline, road, scope, (plan_row["center_lat"], plan_row["center_lng"]))
     ta_figure = get_ta_figure(scope, load_ta_figures())
 
     from core.geocode import GeocodeResult
 
     geo = GeocodeResult(lat=plan_row["center_lat"], lng=plan_row["center_lng"], display_name=plan_row["address"], city=plan_row["city"], zip=plan_row["zip"])
 
-    sheet1, sheet2 = render_plan_pdfs(
+    notes, sheet1, sheet2 = render_plan_pdfs(
         plan_row["address"], geo, road, work_area, scope, ta_figure, devices, [],
         str(OUT_DIR), permit_number=plan_row["permit_number"], job_number=plan_row["job_number"],
+        job_type=plan_row["job_type"], parcel=parcel,
     )
 
     with get_conn() as conn:
         conn.execute(
-            "UPDATE plan SET pdf_sheet1_path=?, pdf_sheet2_path=?, updated_at=datetime('now') WHERE id=?",
-            (sheet1, sheet2, plan_id),
+            "UPDATE plan SET pdf_notes_path=?, pdf_sheet1_path=?, pdf_sheet2_path=?, updated_at=datetime('now') WHERE id=?",
+            (notes, sheet1, sheet2, plan_id),
         )
         log_audit(conn, plan_id, "web", "render", None)
 
-    return jsonify({"sheet1_url": f"/out/{os.path.basename(sheet1)}", "sheet2_url": f"/out/{os.path.basename(sheet2)}"})
+    return jsonify({
+        "notes_url": f"/out/{os.path.basename(notes)}",
+        "sheet1_url": f"/out/{os.path.basename(sheet1)}",
+        "sheet2_url": f"/out/{os.path.basename(sheet2)}",
+    })
 
 
 if __name__ == "__main__":

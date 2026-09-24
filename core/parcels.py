@@ -9,6 +9,7 @@ that callers use to trigger the 60 ft default-frontage fallback (§5A.3).
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Protocol
@@ -20,6 +21,16 @@ from core.geometry import Centerline
 
 if TYPE_CHECKING:
     from core.roads import RoadSegment
+
+
+def _situs_house_number(situs_address: Optional[str]) -> Optional[str]:
+    """First whitespace-delimited token of a county SITUS_ADDR string
+    (e.g. "635 COSTA RICA AVE " -> "635"), or None if there's no address
+    on file for that parcel."""
+    if not situs_address:
+        return None
+    parts = situs_address.strip().split()
+    return parts[0] if parts else None
 
 
 @dataclass
@@ -49,6 +60,15 @@ class SanMateoArcGIS:
         self.query_url = f"{base}/{layer_id}/query"
 
     def parcel_at(self, lat: float, lng: float, *, timeout: int = 15) -> Optional[Parcel]:
+        """Returns None on a network failure (timeout, unreachable, bad
+        response) exactly like a genuine zero-features response -- callers
+        already treat None as "no parcel on file, fall back to the 60 ft
+        default frontage" (spec Sec5A.3), same spirit as
+        core.roads.find_roads_within degrading to [] rather than raising.
+        Caught for real 2026-09-24: a slow gis.smcgov.org response turned
+        an /api/express call into an unhandled ReadTimeout, which Flask
+        rendered as an HTML 500 page -- the browser's res.json() then
+        threw "Unexpected token '<'" trying to parse it as JSON."""
         params = {
             "geometry": f"{lng},{lat}",
             "geometryType": "esriGeometryPoint",
@@ -59,13 +79,77 @@ class SanMateoArcGIS:
             "outSR": 4326,
             "f": "geojson",
         }
-        resp = requests.get(self.query_url, params=params, timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp = requests.get(self.query_url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException:
+            return None
         features = data.get("features", [])
         if not features:
             return None
         return self._parcel_from_feature(features[0])
+
+    def parcel_for_address(
+        self, lat: float, lng: float, *, house_number: Optional[str] = None, timeout: int = 15
+    ) -> Optional[Parcel]:
+        """The real parcel lookup this app should call everywhere (not
+        parcel_at() directly) -- adds a same-address cross-check against
+        county SITUS_ADDR data on top of the exact point-in-polygon match.
+
+        A geocoder's address-interpolated point can land inside the WRONG
+        neighboring parcel, or in the gap between two parcels entirely.
+        Confirmed real 2026-09-24: Nominatim's point for "635 Costa Rica
+        Ave, San Mateo" sat 11 ft from 631's parcel boundary but 23 ft
+        from 635's own -- an unverified point-in-polygon match would have
+        silently returned the wrong house's frontage (or, since it missed
+        both polygons narrowly, nothing at all -- 631's neighbor problem
+        either way once the default-frontage fallback centered on that
+        same inaccurate point). When `house_number` is given, the
+        exact-point result is verified against it; on a mismatch or an
+        empty result, a small-radius search finds the parcel whose own
+        SITUS_ADDR actually carries that house number instead. Returns
+        None (triggering the existing 60 ft default-frontage fallback)
+        rather than ever returning a parcel known not to match."""
+        exact = self.parcel_at(lat, lng, timeout=timeout)
+        if house_number is None:
+            return exact
+        if exact is not None and _situs_house_number(exact.situs_address) == house_number:
+            return exact
+        return self._parcel_by_house_number(house_number, lat, lng, timeout=timeout)
+
+    def _parcel_by_house_number(
+        self, house_number: str, lat: float, lng: float, *, radius_ft: float = 250.0, timeout: int = 15
+    ) -> Optional[Parcel]:
+        """Bounding-envelope search around (lat, lng) for the parcel whose
+        SITUS_ADDR starts with `house_number` -- real county data, not a
+        geocoder guess. 250 ft comfortably covers the ~50-90 ft gaps
+        between adjacent houses seen on real streets in this app's test
+        cases without pulling in enough of the block to risk ambiguity."""
+        ft_per_deg_lat = 365000.0
+        dlat = radius_ft / ft_per_deg_lat
+        dlng = radius_ft / (ft_per_deg_lat * max(0.01, math.cos(math.radians(lat))))
+        params = {
+            "geometry": f"{lng - dlng},{lat - dlat},{lng + dlng},{lat + dlat}",
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": 4326,
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "outSR": 4326,
+            "f": "geojson",
+        }
+        try:
+            resp = requests.get(self.query_url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException:
+            return None
+        for feature in data.get("features", []):
+            situs = (feature.get("properties") or {}).get("SITUS_ADDR")
+            if _situs_house_number(situs) == house_number:
+                return self._parcel_from_feature(feature)
+        return None
 
     @staticmethod
     def _parcel_from_feature(feature: dict) -> Parcel:

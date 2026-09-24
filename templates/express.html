@@ -1,8 +1,9 @@
 {% extends "base.html" %}
-{% block title %}New Plan &mdash; tcpgen{% endblock %}
+{% block title %}{{ 'Edit Plan' if edit_plan else 'New Plan' }} &mdash; tcpgen{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 <style>
   .field-label { display:block; font-size:12px; font-weight:700; color:#6b7280; text-transform:uppercase; margin-bottom:4px; }
   .hint { font-size:12px; color:#6b7280; margin-top:4px; min-height:16px; }
@@ -15,16 +16,31 @@
 {% block content %}
 <div style="display:grid; grid-template-columns: 380px 1fr; gap:20px; align-items:start;">
   <div class="card">
-    <h2 style="margin-top:0;">New Traffic Control Plan</h2>
+    <h2 style="margin-top:0;">{{ 'Edit Traffic Control Plan' if edit_plan else 'New Traffic Control Plan' }}</h2>
+
+    <label class="field-label">Job / PO Address</label>
+    <select id="job-picker" style="width:100%; padding:8px; margin-bottom:10px;">
+      <option value="">&mdash; Type an address manually &mdash;</option>
+    </select>
 
     <label class="field-label">Address</label>
-    <input id="address" type="text" placeholder="157 San Marco Ave, San Bruno CA" style="width:100%; padding:8px; font-size:15px;">
+    <input id="address" type="text" placeholder="157 San Marco Ave, San Bruno CA" style="width:100%; padding:8px; font-size:15px;" value="{{ edit_plan.address if edit_plan else '' }}">
     <div id="geocode-status" class="hint"></div>
 
     <label class="field-label" style="margin-top:12px;">Street</label>
     <select id="street" style="width:100%; padding:8px;" disabled>
       <option value="">&mdash; geocode an address first &mdash;</option>
     </select>
+
+    <div style="margin-top:14px;">
+      <label class="field-label">Job Type</label>
+      <div class="scope-options">
+        <label class="scope-opt"><input type="checkbox" name="job_type" value="trench"> Trench</label>
+        <label class="scope-opt"><input type="checkbox" name="job_type" value="sidewalk"> Sidewalk</label>
+        <label class="scope-opt"><input type="checkbox" name="job_type" value="apron"> Apron</label>
+        <label class="scope-opt"><input type="checkbox" name="job_type" value="street"> Street</label>
+      </div>
+    </div>
 
     <div style="margin-top:14px;">
       <label class="field-label">Work is&hellip;</label>
@@ -41,41 +57,53 @@
       <label><input type="checkbox" id="parking"> Parking lane used</label>
     </div>
 
-    <details style="margin-top:14px;">
+    <details style="margin-top:14px;" {{ 'open' if edit_plan else '' }}>
       <summary style="cursor:pointer; font-weight:600;">Details</summary>
       <div style="margin-top:10px;">
         <label class="field-label">Road width (ft)</label>
-        <input id="road_width" type="number" step="1" style="width:100%; padding:6px;" placeholder="auto from OSM">
+        <input id="road_width" type="number" step="1" style="width:100%; padding:6px;" placeholder="auto from OSM" value="{{ edit_plan.road_width_ft|round(0)|int if edit_plan and edit_plan.road_width_ft else '' }}">
         <label class="field-label" style="margin-top:8px;">Posted speed (mph)</label>
-        <input id="posted_speed" type="number" step="5" style="width:100%; padding:6px;" placeholder="auto from OSM">
+        <input id="posted_speed" type="number" step="5" style="width:100%; padding:6px;" placeholder="auto from OSM" value="{{ edit_plan.posted_speed if edit_plan and edit_plan.posted_speed else '' }}">
         <label class="field-label" style="margin-top:8px;">Permit #</label>
-        <input id="permit_number" type="text" style="width:100%; padding:6px;">
+        <input id="permit_number" type="text" style="width:100%; padding:6px;" value="{{ edit_plan.permit_number if edit_plan and edit_plan.permit_number else '' }}">
         <label class="field-label" style="margin-top:8px;">Job #</label>
-        <input id="job_number" type="text" style="width:100%; padding:6px;">
+        <input id="job_number" type="text" style="width:100%; padding:6px;" value="{{ edit_plan.job_number if edit_plan and edit_plan.job_number else '' }}">
         <label class="field-label" style="margin-top:8px;">Notes</label>
-        <textarea id="notes" rows="3" style="width:100%; padding:6px;"></textarea>
+        <textarea id="notes" rows="3" style="width:100%; padding:6px;">{{ edit_plan.work_description if edit_plan and edit_plan.work_description else '' }}</textarea>
       </div>
     </details>
 
-    <button id="generate-btn" class="btn" style="width:100%; margin-top:16px;" disabled>Generate Plan</button>
+    <button id="generate-btn" class="btn" style="width:100%; margin-top:16px;" disabled>{{ 'Save Changes' if edit_plan else 'Generate Plan' }}</button>
     <div id="generate-status" class="hint"></div>
   </div>
 
-  <div class="card" style="padding:0; overflow:hidden;">
-    <div id="map" style="height:640px;"></div>
+  <div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <div id="map" style="height:640px;"></div>
+    </div>
+    <div id="drawn-hint" class="hint" style="margin-top:6px;">
+      Use the polygon tool (top-right of the map) to draw the actual work area if the automatic one lands on the wrong lot. Otherwise, leave it blank &mdash; the plan uses the property frontage automatically.
+    </div>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script>
+const EDIT_PLAN_ID = {{ edit_plan.id if edit_plan else 'null' }};
+const PREFILL = {{ (edit_plan or {}) | tojson }};
+
 const map = L.map('map').setView([37.5630, -122.3255], 11); // San Mateo County
+// maxZoom 22 over maxNativeZoom 19: Leaflet upscales the z19 tiles past
+// OSM's real limit so a 5-7 ft work area is ~55 px on screen instead of
+// ~7 px -- drawing that precisely at z19 was impractical (2026-09-24).
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors', maxZoom: 22, maxNativeZoom: 19,
 }).addTo(map);
 
-let marker = null, roadLine = null, parcelPoly = null;
+let marker = null, roadLine = null, parcelPoly = null, jobSiteMarker = null;
 let currentGeo = null, currentRoads = [], currentRoad = null;
 
 function setStatus(el, msg, isError) {
@@ -85,10 +113,11 @@ function setStatus(el, msg, isError) {
 
 function checkReady() {
   const scope = document.querySelector('input[name="scope"]:checked');
-  document.getElementById('generate-btn').disabled = !(currentGeo && currentRoad && scope);
+  const jobType = document.querySelectorAll('input[name="job_type"]:checked').length > 0;
+  document.getElementById('generate-btn').disabled = !(currentGeo && currentRoad && scope && jobType);
 }
 
-document.getElementById('address').addEventListener('blur', async () => {
+async function geocodeCurrentAddress() {
   const address = document.getElementById('address').value.trim();
   const statusEl = document.getElementById('geocode-status');
   if (!address) return;
@@ -110,6 +139,40 @@ document.getElementById('address').addEventListener('blur', async () => {
     setStatus(statusEl, 'Lookup failed: ' + err, true);
   }
   checkReady();
+}
+
+document.getElementById('address').addEventListener('blur', geocodeCurrentAddress);
+
+// Job/PO address picker -- an alternative to typing an address, never a
+// replacement for it: the Address field stays freely editable either way,
+// and picking "Type an address manually" (the default, empty option) just
+// leaves whatever is already typed there alone.
+async function loadPortalJobs() {
+  const sel = document.getElementById('job-picker');
+  try {
+    const res = await fetch('/api/portal-jobs');
+    const data = await res.json();
+    (data.jobs || []).forEach(j => {
+      const opt = document.createElement('option');
+      opt.value = j.address;
+      opt.dataset.jobNumber = j.job_number || '';
+      opt.textContent = (j.job_number ? j.job_number + ' — ' : '') + j.address;
+      sel.appendChild(opt);
+    });
+  } catch (err) {
+    // Portal unreachable -- manual address entry still works, so fail silently.
+  }
+}
+loadPortalJobs();
+
+document.getElementById('job-picker').addEventListener('change', (e) => {
+  if (!e.target.value) return;
+  document.getElementById('address').value = e.target.value;
+  // Auto-fill Job # from the picked job's own J-number -- the operator
+  // never has to look it up and type it in separately.
+  const jobNumber = e.target.selectedOptions[0] ? e.target.selectedOptions[0].dataset.jobNumber : '';
+  if (jobNumber) document.getElementById('job_number').value = jobNumber;
+  geocodeCurrentAddress();
 });
 
 async function loadRoads(lat, lng) {
@@ -123,8 +186,15 @@ async function loadRoads(lat, lng) {
   // Auto-focus the picker when more than one street is nearby -- the
   // simplest proxy this page has for "this might be a corner lot" without
   // reimplementing core.parcels.detect_corner_lot's real geometry in JS.
-  if (currentRoads.length > 1) sel.focus();
-  selectRoad(0);
+  if (currentRoads.length > 1 && !EDIT_PLAN_ID) sel.focus();
+  // In edit mode, keep whichever road matches the plan's saved road name
+  // instead of always resetting to the nearest candidate.
+  let initialIndex = 0;
+  if (EDIT_PLAN_ID && PREFILL.road_name) {
+    const match = currentRoads.findIndex(r => r.name === PREFILL.road_name);
+    if (match >= 0) initialIndex = match;
+  }
+  selectRoad(initialIndex);
 }
 
 function selectRoad(index) {
@@ -137,23 +207,107 @@ function selectRoad(index) {
 
 document.getElementById('street').addEventListener('change', (e) => selectRoad(parseInt(e.target.value, 10)));
 
+const JOB_SITE_ICON = L.divIcon({
+  className: 'job-site-pin',
+  html: '<div style="width:22px;height:22px;border-radius:50% 50% 50% 0;background:#16a34a;border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 3px rgba(0,0,0,0.5);"></div>',
+  iconSize: [22, 22],
+  iconAnchor: [11, 22],
+});
+
 async function loadParcel(lat, lng) {
-  const res = await fetch('/api/parcel', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({lat, lng})});
+  // Passing the typed address lets the server cross-check the parcel it
+  // returns against the county's own SITUS_ADDR data (core.parcels
+  // .SanMateoArcGIS.parcel_for_address) instead of blindly trusting
+  // whichever polygon the geocoded point happens to land in -- a
+  // geocoder's point can be off by enough to land on the wrong house
+  // entirely (confirmed real: 635 Costa Rica Ave landed closer to 631's
+  // parcel than its own).
+  const address = document.getElementById('address').value.trim();
+  const res = await fetch('/api/parcel', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({lat, lng, address})});
   const data = await res.json();
   if (parcelPoly) { parcelPoly.remove(); parcelPoly = null; }
+  if (jobSiteMarker) { jobSiteMarker.remove(); jobSiteMarker = null; }
   if (data.parcel) {
     parcelPoly = L.polygon(data.parcel.polygon, {color: '#ea580c', weight: 2, fillOpacity: 0.08}).addTo(map);
+    if (data.parcel.centroid) {
+      const label = 'Job site' + (data.parcel.situs_address ? ' — ' + data.parcel.situs_address.trim() : '');
+      jobSiteMarker = L.marker(data.parcel.centroid, {icon: JOB_SITE_ICON}).addTo(map).bindTooltip(label);
+    }
   }
 }
 
 document.querySelectorAll('input[name="scope"]').forEach(el => el.addEventListener('change', checkReady));
 
+// Sidewalk/Apron jobs almost always affect the sidewalk -- nudge the
+// checkbox on, but leave it fully overridable (never forced/disabled).
+document.querySelectorAll('input[name="job_type"]').forEach(el => el.addEventListener('change', () => {
+  if (el.checked && (el.value === 'sidewalk' || el.value === 'apron')) {
+    document.getElementById('sidewalk').checked = true;
+  }
+  checkReady();
+}));
+
+// Work-area draw tool: an optional manual override for when the
+// auto-computed frontage lands on the wrong lot (the 631 vs 635 Costa
+// Rica bug). At most one polygon at a time -- drawing a new one replaces
+// whatever was there. Leaflet.draw's own edit toolbar (trash icon)
+// deletes it and reverts to the automatic frontage-based area.
+const drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
+let workAreaPolygon = null; // [[lat,lng], ...] or null -- sent as work_area_polygon
+
+// Small vertex handles for both drawing and editing. Leaflet.draw's
+// defaults (10 px, and 20 px on any touch-capable device) covered more
+// ground than the 5-7 ft being marked, so corners couldn't be placed
+// precisely (2026-09-24).
+const smallHandle = new L.DivIcon({ iconSize: new L.Point(6, 6), className: 'leaflet-div-icon leaflet-editing-icon' });
+L.Edit.PolyVerticesEdit.prototype.options.icon = smallHandle;
+L.Edit.PolyVerticesEdit.prototype.options.touchIcon = smallHandle;
+
+const drawControl = new L.Control.Draw({
+  position: 'topright',
+  draw: {
+    polygon: { allowIntersection: false, showArea: false, icon: smallHandle, touchIcon: smallHandle, shapeOptions: { color: '#dc2626', weight: 2 } },
+    rectangle: false, circle: false, circlemarker: false, marker: false, polyline: false,
+  },
+  edit: { featureGroup: drawnItems, remove: true },
+});
+map.addControl(drawControl);
+
+function updateDrawnHint() {
+  const el = document.getElementById('drawn-hint');
+  el.textContent = workAreaPolygon
+    ? 'Using your drawn work area instead of the automatic frontage.'
+    : 'Use the polygon tool (top-right of the map) to draw the actual work area if the automatic one lands on the wrong lot. Otherwise, leave it blank — the plan uses the property frontage automatically.';
+}
+
+function setWorkAreaFromLayer(layer) {
+  const ring = layer.getLatLngs()[0];
+  workAreaPolygon = ring.map(p => [p.lat, p.lng]);
+  updateDrawnHint();
+}
+
+map.on(L.Draw.Event.CREATED, (e) => {
+  drawnItems.clearLayers();
+  drawnItems.addLayer(e.layer);
+  setWorkAreaFromLayer(e.layer);
+});
+map.on(L.Draw.Event.EDITED, (e) => {
+  e.layers.eachLayer((layer) => setWorkAreaFromLayer(layer));
+});
+map.on(L.Draw.Event.DELETED, () => {
+  workAreaPolygon = null;
+  updateDrawnHint();
+});
+
 document.getElementById('generate-btn').addEventListener('click', async () => {
   const statusEl = document.getElementById('generate-status');
   const scope = document.querySelector('input[name="scope"]:checked').value;
+  const jobType = Array.from(document.querySelectorAll('input[name="job_type"]:checked')).map(el => el.value);
   const payload = {
     address: document.getElementById('address').value.trim(),
     scope,
+    job_type: jobType,
     sidewalk: document.getElementById('sidewalk').checked,
     parking: document.getElementById('parking').checked,
     street: currentRoad ? currentRoad.name : null,
@@ -162,18 +316,50 @@ document.getElementById('generate-btn').addEventListener('click', async () => {
     permit_number: document.getElementById('permit_number').value || null,
     job_number: document.getElementById('job_number').value || null,
     notes: document.getElementById('notes').value || null,
+    work_area_polygon: workAreaPolygon,
   };
-  setStatus(statusEl, 'Generating...', false);
+  setStatus(statusEl, EDIT_PLAN_ID ? 'Saving...' : 'Generating...', false);
   document.getElementById('generate-btn').disabled = true;
+  const url = EDIT_PLAN_ID ? `/api/plan/${EDIT_PLAN_ID}/regenerate` : '/api/express';
   try {
-    const res = await fetch('/api/express', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
     const data = await res.json();
-    if (!res.ok) { setStatus(statusEl, data.error || 'Failed to generate', true); document.getElementById('generate-btn').disabled = false; return; }
+    if (!res.ok) { setStatus(statusEl, data.error || 'Failed to save', true); document.getElementById('generate-btn').disabled = false; return; }
     window.location.href = data.redirect;
   } catch (err) {
     setStatus(statusEl, 'Failed: ' + err, true);
     document.getElementById('generate-btn').disabled = false;
   }
 });
+
+// Edit mode: pre-check scope/job_type/checkboxes, restore any drawn work
+// area, and re-run the address lookup so the map/road/parcel state
+// matches the plan being edited, exactly as if the operator had just
+// typed the address themselves.
+if (EDIT_PLAN_ID) {
+  if (PREFILL.scope) {
+    const el = document.querySelector(`input[name="scope"][value="${PREFILL.scope}"]`);
+    if (el) el.checked = true;
+  }
+  if (PREFILL.job_type) {
+    PREFILL.job_type.split(',').forEach((jt) => {
+      const el = document.querySelector(`input[name="job_type"][value="${jt}"]`);
+      if (el) el.checked = true;
+    });
+  }
+  document.getElementById('sidewalk').checked = !!PREFILL.sidewalk_affected;
+  document.getElementById('parking').checked = !!PREFILL.parking_affected;
+  if (PREFILL.work_polygon) {
+    try {
+      const geo = JSON.parse(PREFILL.work_polygon);
+      const pts = geo.coordinates[0].map(([lng, lat]) => [lat, lng]);
+      const layer = L.polygon(pts, { color: '#dc2626', weight: 2 });
+      drawnItems.addLayer(layer);
+      workAreaPolygon = pts;
+      updateDrawnHint();
+    } catch (err) { /* malformed/legacy row -- ignore, falls back to automatic */ }
+  }
+  geocodeCurrentAddress();
+}
 </script>
 {% endblock %}

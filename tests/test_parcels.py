@@ -7,6 +7,7 @@ from core.parcels import (
     NoParcelProvider,
     Parcel,
     SanMateoArcGIS,
+    _situs_house_number,
     detect_corner_lot,
     frontage_stations,
     is_implausible_frontage,
@@ -39,6 +40,24 @@ SAMPLE_GEOJSON = {
             },
         }
     ],
+}
+
+
+ENVELOPE_FEATURE = {
+    "type": "Feature",
+    "properties": {"APN": "032033030", "SITUS_ADDR": "635 COSTA RICA AVE "},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-122.3476, 37.5687], [-122.3475, 37.5687], [-122.3475, 37.5688], [-122.3476, 37.5688], [-122.3476, 37.5687]]],
+    },
+}
+WRONG_NEIGHBOR_FEATURE = {
+    "type": "Feature",
+    "properties": {"APN": "032033040", "SITUS_ADDR": "631 COSTA RICA AVE "},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-122.3477, 37.5685], [-122.3476, 37.5685], [-122.3476, 37.5686], [-122.3477, 37.5686], [-122.3477, 37.5685]]],
+    },
 }
 
 
@@ -95,6 +114,76 @@ def test_parcel_at_handles_multipolygon():
 def test_no_parcel_provider_always_returns_none():
     provider = NoParcelProvider()
     assert provider.parcel_at(37.63, -122.41) is None
+
+def test_situs_house_number_parses_leading_token():
+    assert _situs_house_number('635 COSTA RICA AVE ') == '635'
+    assert _situs_house_number(None) is None
+    assert _situs_house_number('') is None
+
+
+@patch("core.parcels.requests.get")
+def test_parcel_for_address_returns_exact_match_when_situs_agrees(mock_get):
+    mock_get.return_value = _mock_response(SAMPLE_GEOJSON)  # situs "157 SAN MARCO AVE"
+    provider = SanMateoArcGIS()
+    parcel = provider.parcel_for_address(37.63015, -122.41185, house_number="157")
+    assert parcel.apn == "015-123-456"
+    mock_get.assert_called_once()  # no fallback search needed
+
+
+@patch("core.parcels.requests.get")
+def test_parcel_for_address_skips_verification_when_no_house_number(mock_get):
+    mock_get.return_value = _mock_response(SAMPLE_GEOJSON)
+    provider = SanMateoArcGIS()
+    parcel = provider.parcel_for_address(37.63015, -122.41185)
+    assert parcel.apn == "015-123-456"
+    mock_get.assert_called_once()
+
+
+@patch("core.parcels.requests.get")
+def test_parcel_for_address_falls_back_when_exact_point_lands_on_no_parcel(mock_get):
+    # Confirmed real 2026-09-24: Nominatim's point for "635 Costa Rica Ave"
+    # fell in the gap between parcels -- the exact-point query returns zero
+    # features, so this must fall back to a house-number search instead of
+    # quietly leaving the caller with no parcel at all.
+    mock_get.side_effect = [
+        _mock_response({"type": "FeatureCollection", "features": []}),  # exact point: nothing
+        _mock_response({"type": "FeatureCollection", "features": [WRONG_NEIGHBOR_FEATURE, ENVELOPE_FEATURE]}),
+    ]
+    provider = SanMateoArcGIS()
+    parcel = provider.parcel_for_address(37.56859, -122.3475218, house_number="635")
+    assert parcel is not None
+    assert parcel.situs_address.strip() == "635 COSTA RICA AVE"
+    assert mock_get.call_count == 2
+
+
+@patch("core.parcels.requests.get")
+def test_parcel_for_address_falls_back_when_exact_point_lands_on_wrong_neighbor(mock_get):
+    # A worse failure mode than the empty-result case above: the geocoded
+    # point lands INSIDE the wrong neighboring parcel's polygon, so an
+    # unverified parcel_at() would silently return 631's frontage for a
+    # 635 job. The situs cross-check must catch this and search instead.
+    wrong_neighbor_geojson = {"type": "FeatureCollection", "features": [WRONG_NEIGHBOR_FEATURE]}
+    mock_get.side_effect = [
+        _mock_response(wrong_neighbor_geojson),  # exact point: wrong house
+        _mock_response({"type": "FeatureCollection", "features": [WRONG_NEIGHBOR_FEATURE, ENVELOPE_FEATURE]}),
+    ]
+    provider = SanMateoArcGIS()
+    parcel = provider.parcel_for_address(37.56859, -122.3475218, house_number="635")
+    assert parcel is not None
+    assert parcel.situs_address.strip() == "635 COSTA RICA AVE"
+    assert mock_get.call_count == 2
+
+
+@patch("core.parcels.requests.get")
+def test_parcel_for_address_returns_none_when_house_number_never_found(mock_get):
+    mock_get.side_effect = [
+        _mock_response({"type": "FeatureCollection", "features": []}),
+        _mock_response({"type": "FeatureCollection", "features": [WRONG_NEIGHBOR_FEATURE]}),
+    ]
+    provider = SanMateoArcGIS()
+    parcel = provider.parcel_for_address(37.56859, -122.3475218, house_number="999")
+    assert parcel is None
+
 
 
 # ---- spec §5A.4 frontage extent, §5A.5 corner lots -------------------------

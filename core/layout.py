@@ -20,6 +20,7 @@ buys back.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from typing import Optional
 
@@ -97,6 +98,35 @@ def default_work_area(
         far = side * (road.width_ft / 2 - 1)
 
     return WorkArea(start_station_ft=s0, end_station_ft=s1, near_offset_ft=near, far_offset_ft=far, side=side)
+
+
+def work_area_from_polygon(polygon: list[tuple[float, float]], centerline: Centerline) -> WorkArea:
+    """Builds a WorkArea directly from an operator-drawn polygon (each
+    vertex projected to station/offset against the road centerline)
+    instead of synthesizing one from parcel frontage -- the manual
+    override for when the auto-computed footprint lands on the wrong
+    address (the 631-vs-635-Costa-Rica class of bug: a real parcel
+    existed, just not the operator's own). Side is decided the same way
+    work_side() decides it for a parcel -- the sign of the median vertex
+    offset -- so a slightly wobbly hand-drawn polygon still resolves to
+    one consistent side of the road."""
+    stations = []
+    offsets = []
+    for lat, lng in polygon:
+        s, o = centerline.station_and_offset_of_nearest(lat, lng)
+        stations.append(s)
+        offsets.append(o)
+    side = 1 if statistics.median(offsets) >= 0 else -1
+    same_side = [o for o in offsets if (o >= 0) == (side >= 0)] or offsets
+    near = side * min(abs(o) for o in same_side)
+    far = side * max(abs(o) for o in same_side)
+    return WorkArea(
+        start_station_ft=min(stations),
+        end_station_ft=max(stations),
+        near_offset_ft=near,
+        far_offset_ft=far,
+        side=side,
+    )
 
 
 def check_scope_matches_geometry(work_area: WorkArea, road: RoadSegment, scope: Scope) -> Optional[str]:

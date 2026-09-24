@@ -44,3 +44,11 @@ ARCGIS_SMC_PARCELS_BASE = (
     "https://gis.smcgov.org/maps/rest/services/PLANNING/COUNTY_PARCELS/FeatureServer"
 )
 PARCEL_LAYER_ID = 0
+
+# Mi RoC portal's internal Job/PO address list -- the "use a Job/PO
+# address" picker in Express mode, called server-side so the shared
+# secret never reaches the browser. Same-VPS loopback call, no public
+# DNS/TLS hop needed. PORTAL_INTERNAL_TOKEN comes from .env (shared with
+# the portal's own config.json internal_token, copied once).
+PORTAL_INTERNAL_TOKEN = os.environ.get("PORTAL_INTERNAL_TOKEN")
+PORTAL_JOBS_URL = "http://127.0.0.1:8100/internal/tcpgen/jobs"

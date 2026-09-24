@@ -29,9 +29,9 @@ def test_full_closure_is_blocked():
         ta_figure_for_scope(Scope.FULL_CLOSURE)
 
 
-def test_load_ta_figures_has_6h2_and_6h10():
+def test_load_ta_figures_has_6h2_6h3_and_6h10():
     figures = load_ta_figures()
-    assert set(figures) == {"6H-2", "6H-10"}
+    assert set(figures) == {"6H-2", "6H-3", "6H-10"}
 
     fig = figures["6H-2"]
     assert fig.name == "Work Beyond the Shoulder"
@@ -40,6 +40,14 @@ def test_load_ta_figures_has_6h2_and_6h10():
     assert [s.code for s in fig.signs_per_approach] == ["W20-1", "W21-5"]
     assert fig.end_sign is True
     assert fig.end_sign_code == "G20-2"
+
+    fig3 = figures["6H-3"]
+    assert fig3.name == "Shoulder Work"
+    assert fig3.flaggers == 0
+    assert fig3.lanes_closed == 0
+    assert [s.code for s in fig3.signs_per_approach] == ["W20-1", "W21-5"]
+    assert fig3.end_sign is True
+    assert fig3.end_sign_code == "G20-2"
 
     fig10 = figures["6H-10"]
     assert fig10.flaggers == 2
@@ -53,10 +61,13 @@ def test_get_ta_figure_behind_curb_resolves():
     assert fig.key == "6H-2"
 
 
-def test_get_ta_figure_raises_for_figure_not_built_yet():
-    figures = load_ta_figures()
+def test_get_ta_figure_raises_for_figure_not_in_table():
+    # Exercises the KeyError -> TaFigureNotBuiltError path directly (every
+    # real Scope resolves to a built figure now that 6H-3 exists) by
+    # passing a table missing the target key, same as an unbuilt figure
+    # would look to get_ta_figure.
     with pytest.raises(TaFigureNotBuiltError):
-        get_ta_figure(Scope.SHOULDER, figures)  # maps to 6H-3, not built in Phase 2
+        get_ta_figure(Scope.BEHIND_CURB, figures={})
 
 
 @pytest.mark.parametrize(

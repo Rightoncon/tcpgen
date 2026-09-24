@@ -9,12 +9,13 @@
   {% if plans %}
   <table style="width:100%; border-collapse:collapse;">
     <thead><tr style="text-align:left; border-bottom:2px solid #eee;">
-      <th style="padding:8px;">Created</th><th style="padding:8px;">Address</th><th style="padding:8px;">Scope</th><th style="padding:8px;">TA Figure</th><th style="padding:8px;">Status</th><th></th><th></th>
+      <th style="padding:8px;">Created</th><th style="padding:8px;">Job Type</th><th style="padding:8px;">Address</th><th style="padding:8px;">Scope</th><th style="padding:8px;">TA Figure</th><th style="padding:8px;">Status</th><th></th><th></th>
     </tr></thead>
     <tbody>
     {% for p in plans %}
       <tr style="border-bottom:1px solid #f0f0f0;" id="plan-row-{{ p['id'] }}">
         <td style="padding:8px;">{{ p['created_at'] }}</td>
+        <td style="padding:8px;">{{ p['job_type'].split(',')|map('capitalize')|join(', ') if p['job_type'] else '—' }}</td>
         <td style="padding:8px;">{{ p['address'] }}</td>
         <td style="padding:8px;">{{ p['scope'] }}</td>
         <td style="padding:8px;">{{ p['ta_figure'] }}</td>

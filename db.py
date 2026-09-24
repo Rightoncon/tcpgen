@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS plan (
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
   status            TEXT NOT NULL DEFAULT 'draft',
+  job_type          TEXT,
   address           TEXT NOT NULL,
   city              TEXT NOT NULL,
   state             TEXT NOT NULL DEFAULT 'CA',
@@ -81,11 +82,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_plan_id ON audit(plan_id);
 """
 
 
+# Columns added after the initial schema -- ALTER TABLE ADD COLUMN, run
+# once and ignored (via the duplicate-column error) on every later start.
+# Simpler than a migration framework for a single-file SQLite app.
+_MIGRATIONS = [
+    "ALTER TABLE plan ADD COLUMN job_type TEXT",
+    "ALTER TABLE plan ADD COLUMN pdf_notes_path TEXT",
+]
+
+
 def init_db(db_path: Path = DB_PATH) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SCHEMA)
         conn.commit()
+        for stmt in _MIGRATIONS:
+            try:
+                conn.execute(stmt)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
     finally:
         conn.close()
 
