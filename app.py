@@ -180,7 +180,12 @@ def plan_preview(plan_id: int):
 
 @app.route("/out/<path:filename>")
 def serve_pdf(filename: str):
-    return send_from_directory(OUT_DIR, filename, as_attachment=False)
+    # no-store: a re-render overwrites the same dated filename, so any
+    # browser-cached copy is a stale plan -- 997 Castle Hill Rd
+    # (2026-09-24) opened the pre-fix Glennan PDF after a correct re-render.
+    resp = send_from_directory(OUT_DIR, filename, as_attachment=False)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # ---- API: lookups used by the live map (spec §11, §12.2) ------------------
