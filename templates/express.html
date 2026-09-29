@@ -66,6 +66,8 @@
         <input id="posted_speed" type="number" step="5" style="width:100%; padding:6px;" placeholder="auto from OSM" value="{{ edit_plan.posted_speed if edit_plan and edit_plan.posted_speed else '' }}">
         <label class="field-label" style="margin-top:8px;">Permit #</label>
         <input id="permit_number" type="text" style="width:100%; padding:6px;" value="{{ edit_plan.permit_number if edit_plan and edit_plan.permit_number else '' }}">
+        <label class="field-label" style="margin-top:8px;">USA North 811 Ticket #</label>
+        <input id="usa_ticket" type="text" style="width:100%; padding:6px;" placeholder="e.g. 2026092101537-000 (blank = TBD)" value="{{ edit_plan.usa_ticket if edit_plan and edit_plan.usa_ticket else '' }}">
         <label class="field-label" style="margin-top:8px;">Job #</label>
         <input id="job_number" type="text" style="width:100%; padding:6px;" value="{{ edit_plan.job_number if edit_plan and edit_plan.job_number else '' }}">
         <label class="field-label" style="margin-top:8px;">Notes</label>
@@ -314,6 +316,7 @@ document.getElementById('generate-btn').addEventListener('click', async () => {
     road_width_ft: document.getElementById('road_width').value || null,
     posted_speed_mph: document.getElementById('posted_speed').value || null,
     permit_number: document.getElementById('permit_number').value || null,
+    usa_ticket: document.getElementById('usa_ticket').value.trim() || null,
     job_number: document.getElementById('job_number').value || null,
     notes: document.getElementById('notes').value || null,
     work_area_polygon: workAreaPolygon,

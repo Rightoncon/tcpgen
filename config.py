@@ -52,3 +52,6 @@ PARCEL_LAYER_ID = 0
 # the portal's own config.json internal_token, copied once).
 PORTAL_INTERNAL_TOKEN = os.environ.get("PORTAL_INTERNAL_TOKEN")
 PORTAL_JOBS_URL = "http://127.0.0.1:8100/internal/tcpgen/jobs"
+# Where a plan's permit # / USA North 811 ticket # are sent so the portal's
+# job sheet and JobFlow job can show them (2026-09-28).
+PORTAL_JOB_PERMITS_URL = "http://127.0.0.1:8100/internal/tcpgen/job-permits"

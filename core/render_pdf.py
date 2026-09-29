@@ -177,12 +177,15 @@ def _draw_footer(c: canvas.Canvas, address: str, ta_key: str) -> None:
     c.drawRightString(PAGE_W - MARGIN, 6, f"TA {ta_key}   DRAFT")
 
 
+# (label, glyph, fill, border) -- glyph matches how the device is drawn on the
+# map below, so the legend actually identifies the symbols (2026-09-28: every
+# row used to be a dot, and Regulatory sign / Barricade were identical).
 _LEGEND_ITEMS = (
-    ("Cone", WORK_ZONE, WORK_ZONE),
-    ("Warning sign", WARN_FILL, WARN_BORDER),
-    ("Regulatory sign", colors.white, REG_BORDER),
-    ("Flagger", FLAGGER_COLOR, FLAGGER_COLOR),
-    ("Barricade", colors.white, REG_BORDER),
+    ("Cone", "cone", WORK_ZONE, WORK_ZONE),
+    ("Warning sign", "diamond", WARN_FILL, WARN_BORDER),
+    ("Regulatory sign", "diamond", colors.white, REG_BORDER),
+    ("Flagger", "flagger", FLAGGER_COLOR, FLAGGER_COLOR),
+    ("Barricade", "barricade", colors.white, REG_BORDER),
 )
 
 
@@ -196,11 +199,37 @@ def _draw_legend(c: canvas.Canvas, x: float, y: float) -> None:
     c.setFont("Helvetica-Bold", 7)
     c.setFillColor(PANEL_LABEL)
     c.drawString(x, y + _LEGEND_HEADER_PT, "LEGEND")
-    for i, (label, fill, border) in enumerate(_LEGEND_ITEMS):
+    for i, (label, glyph, fill, border) in enumerate(_LEGEND_ITEMS):
         row_y = y - i * _LEGEND_ROW_PT
+        gx, gy = x + 4.5, row_y + 2.8   # glyph centre, level with the text
         c.setFillColor(fill)
         c.setStrokeColor(border)
-        c.circle(x + 4.5, row_y + 2.8, 3.8, fill=1, stroke=1)
+        c.setLineWidth(0.75)
+        if glyph == "cone":
+            c.circle(gx, gy, 2.6, fill=1, stroke=1)
+        elif glyph == "flagger":
+            c.circle(gx, gy, 3.8, fill=1, stroke=1)
+            c.setFillColor(colors.white)
+            c.setFont("Helvetica-Bold", 5)
+            c.drawCentredString(gx, gy - 1.8, "F")
+        elif glyph == "barricade":
+            bw, bh = 8.0, 3.0
+            c.rect(gx - bw / 2, gy - bh / 2, bw, bh, fill=1, stroke=1)
+            c.setStrokeColor(WORK_ZONE)
+            c.setLineWidth(1)
+            for k in range(3):
+                sx = gx - bw / 2 + (k + 0.5) * (bw / 3)
+                c.line(sx - bh / 2, gy - bh / 2, sx + bh / 2, gy + bh / 2)
+        else:  # diamond sign
+            r = 4.2
+            path = c.beginPath()
+            path.moveTo(gx, gy + r)
+            path.lineTo(gx + r, gy)
+            path.lineTo(gx, gy - r)
+            path.lineTo(gx - r, gy)
+            path.close()
+            c.drawPath(path, fill=1, stroke=1)
+        c.setLineWidth(0.75)
         c.setFont("Helvetica", 8)
         c.setFillColor(colors.white)
         c.drawString(x + 14, row_y, label)
@@ -222,6 +251,7 @@ def _draw_info_panel(
     job_number: Optional[str],
     warnings: list[str],
     job_type: Optional[str] = None,
+    usa_ticket: Optional[str] = None,
 ) -> None:
     c.setFillColor(PANEL_BG)
     c.rect(x, y, w, h, fill=1, stroke=0)
@@ -253,7 +283,9 @@ def _draw_info_panel(
     field("Scope", scope.value.replace("_", " ").title())
     field("TA Figure", f"{ta_figure.key} — {ta_figure.name}")
     field("Flaggers", str(ta_figure.flaggers))
-    field("Permit #", permit_number or "____________")
+    # "TBD" until the number is issued (Michael, 2026-09-28).
+    field("Permit #", permit_number or "TBD")
+    field("USA North 811 Ticket #", usa_ticket or "TBD")
     field("Job #", job_number or "____________")
 
     if warnings:
@@ -519,6 +551,7 @@ def _build_notes_sheet(
     permit_number: Optional[str],
     job_number: Optional[str],
     job_type: Optional[str],
+    usa_ticket: Optional[str] = None,
 ) -> None:
     """Cover sheet: same header/footer chrome as sheets 1-2, a condensed
     job summary line, and the numbered GENERAL_NOTES list in two columns.
@@ -543,8 +576,8 @@ def _build_notes_sheet(
     if job_type:
         summary_parts.append(", ".join(p.strip().title() for p in job_type.split(",") if p.strip()))
     summary_parts.append(f"TA {ta_figure.key} — {ta_figure.name}")
-    if permit_number:
-        summary_parts.append(f"Permit # {permit_number}")
+    summary_parts.append(f"Permit # {permit_number or 'TBD'}")
+    summary_parts.append(f"USA North 811 Ticket # {usa_ticket or 'TBD'}")
     if job_number:
         summary_parts.append(f"Job # {job_number}")
     c.setFont("Helvetica", 8)
@@ -610,6 +643,7 @@ def _build_sheet(
     work_zone_shape: str,
     job_type: Optional[str] = None,
     parcel: Optional[Parcel] = None,
+    usa_ticket: Optional[str] = None,
 ) -> None:
     map_x, map_y = 0.0, float(FOOTER_H)
     map_w = PAGE_W - PANEL_W
@@ -631,7 +665,7 @@ def _build_sheet(
         c, map_w, float(FOOTER_H), PANEL_W, PAGE_H - HEADER_H - FOOTER_H,
         sheet_label=sheet_label, geo_display=geo_display, road=road, scope=scope,
         ta_figure=ta_figure, permit_number=permit_number, job_number=job_number, warnings=warnings,
-        job_type=job_type,
+        job_type=job_type, usa_ticket=usa_ticket,
     )
     house_number_match = re.match(r"\s*(\d+)", raw_address)
     road_label = f"{house_number_match.group(1)} {road.name}" if house_number_match else road.name
@@ -655,6 +689,7 @@ def render_plan_pdfs(
     job_number: Optional[str] = None,
     job_type: Optional[str] = None,
     parcel: Optional[Parcel] = None,
+    usa_ticket: Optional[str] = None,
 ) -> tuple[str, str, str]:
     """spec §10.4/§10.6 — builds all three sheets (cover/general notes,
     close-up, wide area) and writes them to `out_dir`. Always all three --
@@ -671,13 +706,14 @@ def render_plan_pdfs(
         raw_address=raw_address, geo_display=geo.display_name, road=road, centerline=centerline, devices=devices,
         work_area=work_area, scope=scope, ta_figure=ta_figure,
         permit_number=permit_number, job_number=job_number, warnings=warnings, job_type=job_type,
-        parcel=parcel,
+        parcel=parcel, usa_ticket=usa_ticket,
     )
 
     c0 = canvas.Canvas(notes_path, pagesize=(PAGE_W, PAGE_H))
     _build_notes_sheet(
         c0, raw_address=raw_address, geo_display=geo.display_name, road=road, scope=scope,
         ta_figure=ta_figure, permit_number=permit_number, job_number=job_number, job_type=job_type,
+        usa_ticket=usa_ticket,
     )
     c0.save()
 

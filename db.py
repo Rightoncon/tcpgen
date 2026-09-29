@@ -88,6 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_plan_id ON audit(plan_id);
 _MIGRATIONS = [
     "ALTER TABLE plan ADD COLUMN job_type TEXT",
     "ALTER TABLE plan ADD COLUMN pdf_notes_path TEXT",
+    "ALTER TABLE plan ADD COLUMN usa_ticket TEXT",  # USA North 811 ticket # (2026-09-28)
 ]
 
 

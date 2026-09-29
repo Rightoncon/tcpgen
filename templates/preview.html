@@ -32,7 +32,8 @@
     <h3 style="margin-top:0;">Plan details</h3>
     <table style="width:100%; font-size:14px;">
       {% if plan['job_type'] %}<tr><td style="color:#6b7280; padding:4px 0;">Job Type</td><td>{{ plan['job_type'].split(',')|map('capitalize')|join(', ') }}</td></tr>{% endif %}
-      <tr><td style="color:#6b7280; padding:4px 0;">Permit #</td><td>{{ plan['permit_number'] or '—' }}</td></tr>
+      <tr><td style="color:#6b7280; padding:4px 0;">Permit #</td><td>{{ plan['permit_number'] or 'TBD' }}</td></tr>
+      <tr><td style="color:#6b7280; padding:4px 0;">USA North 811 Ticket #</td><td>{{ plan['usa_ticket'] or 'TBD' }}</td></tr>
       <tr><td style="color:#6b7280; padding:4px 0;">Job #</td><td>{{ plan['job_number'] or '—' }}</td></tr>
       <tr><td style="color:#6b7280; padding:4px 0;">Road</td><td>{{ plan['road_width_ft']|round(0) }} ft, {{ plan['posted_speed'] }} mph, {{ plan['road_lanes'] }} lanes</td></tr>
       <tr><td style="color:#6b7280; padding:4px 0;">Frontage</td><td>{{ plan['frontage_source'] }}{% if plan['frontage_length_ft'] %} ({{ plan['frontage_length_ft']|round(0) }} ft){% endif %}</td></tr>

@@ -219,6 +219,31 @@ def api_roads():
     return jsonify({"roads": [_road_to_dict(r) for r in roads]})
 
 
+def _push_permits_to_portal(plan_id: int) -> None:
+    """Send this plan's permit # and USA North 811 ticket # to the Mi RoC
+    portal so its job sheet and JobFlow job show them (2026-09-28). Sends the
+    plan's FULL current state (or deleted=True) -- the portal re-files the
+    plan under whatever job # it has now, so a changed or cleared job #
+    moves/removes it. Best effort: the portal being down never blocks
+    saving a plan; the next save re-sends."""
+    if not config.PORTAL_INTERNAL_TOKEN:
+        return
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, job_number, permit_number, usa_ticket, address FROM plan WHERE id=?", (plan_id,)
+        ).fetchone()
+    body = {"plan_id": plan_id, "deleted": row is None}
+    if row is not None:
+        body.update(job_number=row["job_number"], permit_number=row["permit_number"],
+                    usa_ticket=row["usa_ticket"], address=row["address"])
+    try:
+        requests.post(config.PORTAL_JOB_PERMITS_URL,
+                      headers={"X-Internal-Token": config.PORTAL_INTERNAL_TOKEN},
+                      json=body, timeout=8).raise_for_status()
+    except requests.RequestException as exc:
+        app.logger.warning("portal job-permits push failed for plan %s: %s", plan_id, exc)
+
+
 @app.route("/api/portal-jobs")
 def api_portal_jobs():
     """Proxies the Mi RoC portal's active Job/PO address list so the
@@ -294,6 +319,7 @@ def _build_plan_from_payload(data: dict) -> dict:
     parking = bool(data.get("parking"))
     street_hint = data.get("street") or None
     permit_number = data.get("permit_number") or None
+    usa_ticket = (data.get("usa_ticket") or "").strip() or None
     job_number = data.get("job_number") or None
     notes = data.get("notes") or None
 
@@ -387,6 +413,7 @@ def _build_plan_from_payload(data: dict) -> dict:
     return {
         "job_type": job_type, "address": address, "geo": geo, "road": road, "parcel": parcel,
         "scope": scope, "sidewalk": sidewalk, "parking": parking, "permit_number": permit_number,
+        "usa_ticket": usa_ticket,
         "job_number": job_number, "notes": notes, "ta_figure": ta_figure, "devices": devices,
         "warnings": warnings, "corner_lot": corner_lot, "frontage_len": frontage_len,
         "work_area_polygon": work_area_polygon, "frontage_source": frontage_source,
@@ -399,7 +426,7 @@ def _plan_write_params(b: dict) -> tuple:
     drifting apart."""
     return (
         b["job_type"], b["address"], b["geo"].city, b["geo"].zip,
-        b["permit_number"], b["job_number"], b["geo"].lat, b["geo"].lng,
+        b["permit_number"], b["usa_ticket"], b["job_number"], b["geo"].lat, b["geo"].lng,
         _polygon_geojson(b["work_area_polygon"]) if b.get("work_area_polygon") else None,
         b["notes"],
         b["scope"].value, int(b["sidewalk"]), int(b["parking"]), b["road"].speed_mph, b["ta_figure"].key,
@@ -430,12 +457,12 @@ def api_express():
         cur = conn.execute(
             """INSERT INTO plan (
                 created_at, updated_at, status, job_type, address, city, state, zip, jurisdiction,
-                permit_number, job_number, center_lat, center_lng, work_polygon, work_description,
+                permit_number, usa_ticket, job_number, center_lat, center_lng, work_polygon, work_description,
                 scope, sidewalk_affected, parking_affected, duration, posted_speed, ta_figure,
                 road_osm_id, road_name, road_geometry, road_width_ft, road_lanes, road_bearing_deg,
                 parcel_apn, parcel_polygon, frontage_source, frontage_length_ft, corner_lot
             ) VALUES (datetime('now'), datetime('now'), 'draft', ?, ?, ?, 'CA', ?, NULL,
-                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, 'short_term', ?, ?,
                 ?, ?, ?, ?, ?, NULL,
                 ?, ?, ?, ?, ?)""",
@@ -445,6 +472,7 @@ def api_express():
         _insert_devices(conn, plan_id, b["devices"])
         log_audit(conn, plan_id, "web", "create", json.dumps({"warnings": b["warnings"]}))
 
+    _push_permits_to_portal(plan_id)
     return jsonify({"id": plan_id, "redirect": f"/plan/{plan_id}/preview", "warnings": b["warnings"]})
 
 
@@ -474,7 +502,7 @@ def api_plan_regenerate(plan_id: int):
         conn.execute(
             """UPDATE plan SET
                 job_type=?, address=?, city=?, zip=?,
-                permit_number=?, job_number=?, center_lat=?, center_lng=?, work_polygon=?, work_description=?,
+                permit_number=?, usa_ticket=?, job_number=?, center_lat=?, center_lng=?, work_polygon=?, work_description=?,
                 scope=?, sidewalk_affected=?, parking_affected=?, posted_speed=?, ta_figure=?,
                 road_osm_id=?, road_name=?, road_geometry=?, road_width_ft=?, road_lanes=?,
                 parcel_apn=?, parcel_polygon=?, frontage_source=?, frontage_length_ft=?, corner_lot=?,
@@ -493,6 +521,7 @@ def api_plan_regenerate(plan_id: int):
             except OSError:
                 pass
 
+    _push_permits_to_portal(plan_id)
     return jsonify({"id": plan_id, "redirect": f"/plan/{plan_id}/preview", "warnings": b["warnings"]})
 
 
@@ -509,7 +538,7 @@ def api_get_plan(plan_id: int):
 @app.route("/api/plan/<int:plan_id>", methods=["PATCH"])
 def api_update_plan(plan_id: int):
     data = request.get_json(force=True) or {}
-    allowed = {"permit_number", "job_number", "notes_override", "status"}
+    allowed = {"permit_number", "usa_ticket", "job_number", "notes_override", "status"}
     updates = {k: v for k, v in data.items() if k in allowed}
     if not updates:
         return jsonify({"error": "no updatable fields provided (allowed: " + ", ".join(sorted(allowed)) + ")"}), 400
@@ -520,6 +549,7 @@ def api_update_plan(plan_id: int):
             abort(404)
         conn.execute(f"UPDATE plan SET {set_clause}, updated_at=datetime('now') WHERE id=?", (*updates.values(), plan_id))
         log_audit(conn, plan_id, "web", "update", json.dumps(updates))
+    _push_permits_to_portal(plan_id)
     return jsonify({"ok": True})
 
 
@@ -541,6 +571,7 @@ def api_delete_plan(plan_id: int):
         # audit has no FK on this table, so it needs an explicit delete.
         conn.execute("DELETE FROM plan WHERE id=?", (plan_id,))
         conn.execute("DELETE FROM audit WHERE plan_id=?", (plan_id,))
+    _push_permits_to_portal(plan_id)
     return jsonify({"ok": True})
 
 
@@ -571,6 +602,7 @@ def api_render(plan_id: int):
     notes, sheet1, sheet2 = render_plan_pdfs(
         plan_row["address"], geo, road, work_area, scope, ta_figure, devices, [],
         str(OUT_DIR), permit_number=plan_row["permit_number"], job_number=plan_row["job_number"],
+        usa_ticket=plan_row["usa_ticket"],
         job_type=plan_row["job_type"], parcel=parcel,
     )
 
