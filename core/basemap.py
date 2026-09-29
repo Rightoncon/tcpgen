@@ -14,7 +14,10 @@ import requests
 from config import BASEMAP_PROVIDER, MAPBOX_TOKEN
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache" / "basemaps"
-MAPBOX_STYLE = "mapbox/light-v11"  # lighter/fewer labels than streets-v12 -- easy revert if Michael prefers streets-v12 back
+# streets-v12: building outlines, house numbers and sidewalks read clearly on the
+# printed plan. light-v11 (tried 2026-09-24 for a calmer look) made houses near-
+# invisible pale-grey boxes -- reverted 2026-09-28 at Michael's request (636 Hemlock).
+MAPBOX_STYLE = "mapbox/streets-v12"
 MAX_DIMENSION_PX = 1280  # Mapbox Static Images API limit (logical size, pre-@2x)
 
 
