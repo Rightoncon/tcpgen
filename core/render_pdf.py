@@ -186,18 +186,24 @@ _LEGEND_ITEMS = (
 )
 
 
+# Same type sizes as the info-panel fields above it (label 7pt bold, value
+# 8pt) -- the legend was 6.5pt and too small to read (Michael, 2026-09-28).
+_LEGEND_ROW_PT = 12      # vertical spacing between legend rows
+_LEGEND_HEADER_PT = 14   # header sits this far above the first row
+
+
 def _draw_legend(c: canvas.Canvas, x: float, y: float) -> None:
-    c.setFont("Helvetica-Bold", 6.5)
+    c.setFont("Helvetica-Bold", 7)
     c.setFillColor(PANEL_LABEL)
-    c.drawString(x, y + 12, "LEGEND")
+    c.drawString(x, y + _LEGEND_HEADER_PT, "LEGEND")
     for i, (label, fill, border) in enumerate(_LEGEND_ITEMS):
-        row_y = y - i * 10
+        row_y = y - i * _LEGEND_ROW_PT
         c.setFillColor(fill)
         c.setStrokeColor(border)
-        c.circle(x + 4, row_y + 2, 3, fill=1, stroke=1)
-        c.setFont("Helvetica", 6.5)
+        c.circle(x + 4.5, row_y + 2.8, 3.8, fill=1, stroke=1)
+        c.setFont("Helvetica", 8)
         c.setFillColor(colors.white)
-        c.drawString(x + 12, row_y, label)
+        c.drawString(x + 14, row_y, label)
 
 
 def _draw_info_panel(
@@ -264,13 +270,13 @@ def _draw_info_panel(
                 cursor_y -= 8
             cursor_y -= 2
 
-    # _draw_legend anchors its header 12pt above `y` and stacks len(_LEGEND_ITEMS)
-    # rows at 10pt each below that — needs ~10pt per row + 12pt header + a
+    # _draw_legend anchors its header _LEGEND_HEADER_PT above `y` and stacks len(_LEGEND_ITEMS)
+    # rows at _LEGEND_ROW_PT each below that — needs ~10pt per row + 12pt header + a
     # few pt of margin above the panel's own bottom edge (`y`) or the
     # bottom rows land in the footer band and get painted over. Found by
     # actually rendering a sheet and looking at it, not by inspection —
     # see test_render_pdf.py for the regression.
-    _draw_legend(c, text_x, y + 14 + 10 * (len(_LEGEND_ITEMS) - 1))
+    _draw_legend(c, text_x, y + 14 + _LEGEND_ROW_PT * (len(_LEGEND_ITEMS) - 1))
 
 
 def _work_area_distance_text(station: float, work_area: WorkArea) -> str:
