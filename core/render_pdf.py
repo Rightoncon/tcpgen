@@ -252,6 +252,7 @@ def _draw_info_panel(
     warnings: list[str],
     job_type: Optional[str] = None,
     usa_ticket: Optional[str] = None,
+    signs: Optional[list] = None,
 ) -> None:
     c.setFillColor(PANEL_BG)
     c.rect(x, y, w, h, fill=1, stroke=0)
@@ -308,7 +309,42 @@ def _draw_info_panel(
     # bottom rows land in the footer band and get painted over. Found by
     # actually rendering a sheet and looking at it, not by inspection —
     # see test_render_pdf.py for the regression.
-    _draw_legend(c, text_x, y + 14 + _LEGEND_ROW_PT * (len(_LEGEND_ITEMS) - 1))
+    legend_base = y + 24 + _LEGEND_ROW_PT * (len(_LEGEND_ITEMS) - 1)
+    legend_top = legend_base + _LEGEND_HEADER_PT + 10
+
+    if signs:
+        # SIGNS list: number, code, wording, distance -- same sizes as the
+        # legend; shrinks a step if a long sign set would reach the legend.
+        rows = []
+        for size in (8, 7, 6.5):
+            rows = []
+            for sg in signs:
+                head = f"{sg['n']}. {sg['code']}  {sg['where']}"
+                body = _wrap_text(sg["text"], w - 34, "Helvetica", size - 0.5, c) if sg["text"] else []
+                rows.append((head, body))
+            need = 14 + sum((size + 2) * (1 + len(b)) + 3 for _h, b in rows)
+            if cursor_y - need > legend_top:
+                break
+        cursor_y -= 6
+        c.setFont("Helvetica-Bold", 7)
+        c.setFillColor(PANEL_LABEL)
+        c.drawString(text_x, cursor_y, "SIGNS (numbers match the map)")
+        cursor_y -= size + 6
+        for head, body in rows:
+            if cursor_y < legend_top:
+                break
+            c.setFont("Helvetica-Bold", size)
+            c.setFillColor(colors.white)
+            c.drawString(text_x, cursor_y, head)
+            cursor_y -= size + 2
+            c.setFont("Helvetica", size - 0.5)
+            c.setFillColor(PANEL_LABEL)
+            for line in body:
+                c.drawString(text_x + 10, cursor_y, line)
+                cursor_y -= size + 2
+            cursor_y -= 3
+
+    _draw_legend(c, text_x, legend_base)
 
 
 def _work_area_distance_text(station: float, work_area: WorkArea) -> str:
@@ -322,29 +358,44 @@ def _work_area_distance_text(station: float, work_area: WorkArea) -> str:
     return "at work area"
 
 
-def _stack_labels(c: canvas.Canvas, x: float, y: float, w: float, targets: list[tuple], work_area: WorkArea) -> None:
-    """spec §10.4 Sheet 1: 'labels, sign boxes stacked in the white parcel
-    margins with dashed leaders back to their station.' Stacked along the
-    bottom of the map frame, sorted by station, each with a dashed leader
-    back to its marker and labeled with its distance from the work area."""
-    if not targets:
-        return
-    targets = sorted(targets, key=lambda t: t[4])
-    strip_h = 14
-    col_w = w / len(targets)
-    for i, (px, py, code, _label, station) in enumerate(targets):
-        col_x = x + i * col_w + 2
-        # Clear of the Mapbox logo (bottom-left) and attribution text
-        # (bottom-right), which otherwise sit on top of the end labels.
-        text_y = y + 24
-        c.setStrokeColor(colors.HexColor("#94a3b8"))
-        c.setLineWidth(0.5)
-        c.setDash(2, 2)
-        c.line(px, py, col_x, text_y + strip_h)
-        c.setDash()
+# Plain-English wording for sign codes whose Device carries no label.
+_SIGN_TEXT = {
+    "W20-1": "ROAD WORK AHEAD", "W21-5": "SHOULDER WORK", "G20-2": "END ROAD WORK",
+    "R9-9": "SIDEWALK CLOSED", "R9-11": "SIDEWALK CLOSED AHEAD, CROSS HERE",
+    "R9-11a": "SIDEWALK CLOSED, CROSS HERE", "W20-4": "ONE LANE ROAD AHEAD",
+    "W20-7": "FLAGGER AHEAD", "W3-4": "BE PREPARED TO STOP", "W8-24": "STEEL PLATE AHEAD",
+    "C27(CA)": "OPEN TRENCH", "W20-5": "LANE CLOSED AHEAD", "R11-2": "ROAD CLOSED",
+}
+
+
+def _number_signs(c: canvas.Canvas, targets: list[tuple], work_area: WorkArea) -> list[dict]:
+    """Numbers each sign in station order with a small badge beside its
+    diamond and returns the schedule for the side panel (Michael, 2026-10-07:
+    the 5.5pt labels stacked along the bottom with long dashed leaders were
+    too small to read -- the panel list is the same size as the legend)."""
+    out, placed = [], []
+    for n, (px, py, code, label, station) in enumerate(sorted(targets, key=lambda t: t[4]), start=1):
+        bx, by = px + 7.5, py + 7.5
+        # Signs at the work area sit on top of each other -- step a badge
+        # around its sign until it clears the badges already drawn.
+        for dx, dy in ((7.5, 7.5), (7.5, -8), (-8, 7.5), (-8, -8), (7.5, 18), (-8, 18), (7.5, -18), (-8, -18), (18, 0), (-18, 0)):
+            bx, by = px + dx, py + dy
+            if all(math.hypot(bx - qx, by - qy) >= 11 for qx, qy in placed):
+                break
+        placed.append((bx, by))
+        c.setStrokeColor(colors.HexColor("#64748b"))
+        c.setLineWidth(0.4)
+        c.line(px, py, bx, by)
         c.setFillColor(REG_BORDER)
-        c.setFont("Helvetica", 5.5)
-        c.drawString(col_x, text_y, f"{code} {_work_area_distance_text(station, work_area)}")
+        c.setStrokeColor(colors.white)
+        c.setLineWidth(0.8)
+        c.circle(bx, by, 5.2, fill=1, stroke=1)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 6.5 if n < 10 else 5.5)
+        c.drawCentredString(bx, by - 2.3, str(n))
+        out.append({"n": n, "code": code, "text": label or _SIGN_TEXT.get(code, ""),
+                    "where": _work_area_distance_text(station, work_area)})
+    return out
 
 
 def _draw_arrow(c: canvas.Canvas, x1: float, y1: float, x2: float, y2: float, color: colors.Color, label: str) -> None:
@@ -537,7 +588,8 @@ def _draw_map(
                 label_targets.append((px, py, d.code, d.label or "", d.station_ft))
 
     if stack_labels:
-        _stack_labels(c, x, y, w, label_targets, work_area)
+        return _number_signs(c, label_targets, work_area)
+    return []
 
 
 def _build_notes_sheet(
@@ -655,7 +707,7 @@ def _build_sheet(
     base_zoom = choose_zoom(device_points, center_lat, center_lng, map_w, map_h)
     zoom = max(1, base_zoom + zoom_offset)
 
-    _draw_map(
+    signs = _draw_map(
         c, map_x, map_y, map_w, map_h,
         road=road, centerline=centerline, devices=devices, work_area=work_area,
         zoom=zoom, stack_labels=stack_labels, work_zone_shape=work_zone_shape,
@@ -665,7 +717,7 @@ def _build_sheet(
         c, map_w, float(FOOTER_H), PANEL_W, PAGE_H - HEADER_H - FOOTER_H,
         sheet_label=sheet_label, geo_display=geo_display, road=road, scope=scope,
         ta_figure=ta_figure, permit_number=permit_number, job_number=job_number, warnings=warnings,
-        job_type=job_type, usa_ticket=usa_ticket,
+        job_type=job_type, usa_ticket=usa_ticket, signs=signs,
     )
     house_number_match = re.match(r"\s*(\d+)", raw_address)
     road_label = f"{house_number_match.group(1)} {road.name}" if house_number_match else road.name

@@ -129,22 +129,30 @@ def test_sign_labels_measure_from_the_work_area():
     assert _work_area_distance_text(1713, wa) == "at work area"
 
 
-def test_sidewalk_package_labels_span_the_map(tmp_path):
-    # Regression (997 Castle Hill Rd, 2026-09-24): drawing a barricade
-    # reused the map frame's w/h names, so every stacked label and leader
-    # collapsed into the frame's bottom-left corner. Labels must spread
-    # across the sheet, not sit within a few points of each other.
+def test_sidewalk_package_signs_numbered_and_listed(tmp_path):
+    # 2026-10-07 (Michael): the 5.5pt labels stacked along the bottom of the
+    # map were unreadable -- each sign now gets a numbered badge beside it and
+    # a SIGNS list in the side panel (number, code, distance, wording). The
+    # 997 Castle Hill regression (badges collapsing into one corner) is
+    # covered by checking the badges spread across the map.
     geo, road, work_area, ta_figure, devices, warnings = _plan(sidewalk=True)
     assert any(d.kind == "barricade" for d in devices)
     _notes, sheet1, _sheet2 = render_plan_pdfs(
         geo.display_name, geo, road, work_area, Scope.BEHIND_CURB, ta_figure, devices, warnings, str(tmp_path)
     )
-    xs = []
+    signs = [d for d in devices if d.kind not in ("cone", "flagger", "barricade") and d.code]
+    text = PdfReader(sheet1).pages[0].extract_text()
+    assert "SIGNS (numbers match the map)" in text
+    for d in signs:
+        assert d.code in text
+    badge_xs = []
 
-    def visitor(text, cm, tm, font_dict, font_size):
-        if text.strip() and ("'" in text or "at work area" in text) and font_size and font_size < 6:
-            xs.append(tm[4])
+    def visitor(t, cm, tm, font_dict, font_size):
+        if t.strip().isdigit() and font_size and 5 <= font_size <= 7 and tm[4] < 600:
+            badge_xs.append((tm[4], tm[5]))
 
     PdfReader(sheet1).pages[0].extract_text(visitor_text=visitor)
-    assert len(xs) >= 2
-    assert max(xs) - min(xs) > 200
+    assert len(badge_xs) >= len(signs)
+    spread = max(max(p[0] for p in badge_xs) - min(p[0] for p in badge_xs),
+                 max(p[1] for p in badge_xs) - min(p[1] for p in badge_xs))
+    assert spread > 150   # badges sit at their signs, not piled in a corner
