@@ -195,44 +195,57 @@ _LEGEND_ROW_PT = 12      # vertical spacing between legend rows
 _LEGEND_HEADER_PT = 14   # header sits this far above the first row
 
 
-def _draw_legend(c: canvas.Canvas, x: float, y: float) -> None:
+def _legend_items(only: Optional[set] = None):
+    return [it for it in _LEGEND_ITEMS if only is None or it[1] in only]
+
+
+def _draw_legend(c: canvas.Canvas, x: float, y: float, only: Optional[set] = None, title: str = "LEGEND") -> None:
+    """`only` = glyph kinds to include (close-up: just the non-sign symbols on
+    the plan, since each sign shows its own symbol in the SIGNS list)."""
+    items = _legend_items(only)
+    if not items:
+        return
     c.setFont("Helvetica-Bold", 7)
     c.setFillColor(PANEL_LABEL)
-    c.drawString(x, y + _LEGEND_HEADER_PT, "LEGEND")
-    for i, (label, glyph, fill, border) in enumerate(_LEGEND_ITEMS):
+    c.drawString(x, y + _LEGEND_HEADER_PT, title)
+    for i, (label, glyph, fill, border) in enumerate(items):
         row_y = y - i * _LEGEND_ROW_PT
         gx, gy = x + 4.5, row_y + 2.8   # glyph centre, level with the text
-        c.setFillColor(fill)
-        c.setStrokeColor(border)
-        c.setLineWidth(0.75)
-        if glyph == "cone":
-            c.circle(gx, gy, 2.6, fill=1, stroke=1)
-        elif glyph == "flagger":
-            c.circle(gx, gy, 3.8, fill=1, stroke=1)
-            c.setFillColor(colors.white)
-            c.setFont("Helvetica-Bold", 5)
-            c.drawCentredString(gx, gy - 1.8, "F")
-        elif glyph == "barricade":
-            bw, bh = 8.0, 3.0
-            c.rect(gx - bw / 2, gy - bh / 2, bw, bh, fill=1, stroke=1)
-            c.setStrokeColor(WORK_ZONE)
-            c.setLineWidth(1)
-            for k in range(3):
-                sx = gx - bw / 2 + (k + 0.5) * (bw / 3)
-                c.line(sx - bh / 2, gy - bh / 2, sx + bh / 2, gy + bh / 2)
-        else:  # diamond sign
-            r = 4.2
-            path = c.beginPath()
-            path.moveTo(gx, gy + r)
-            path.lineTo(gx + r, gy)
-            path.lineTo(gx, gy - r)
-            path.lineTo(gx - r, gy)
-            path.close()
-            c.drawPath(path, fill=1, stroke=1)
+        _draw_glyph(c, gx, gy, glyph, fill, border)
         c.setLineWidth(0.75)
         c.setFont("Helvetica", 8)
         c.setFillColor(colors.white)
         c.drawString(x + 14, row_y, label)
+
+
+def _draw_glyph(c: canvas.Canvas, gx: float, gy: float, glyph: str, fill, border) -> None:
+    c.setFillColor(fill)
+    c.setStrokeColor(border)
+    c.setLineWidth(0.75)
+    if glyph == "cone":
+        c.circle(gx, gy, 2.6, fill=1, stroke=1)
+    elif glyph == "flagger":
+        c.circle(gx, gy, 3.8, fill=1, stroke=1)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 5)
+        c.drawCentredString(gx, gy - 1.8, "F")
+    elif glyph == "barricade":
+        bw, bh = 8.0, 3.0
+        c.rect(gx - bw / 2, gy - bh / 2, bw, bh, fill=1, stroke=1)
+        c.setStrokeColor(WORK_ZONE)
+        c.setLineWidth(1)
+        for k in range(3):
+            sx = gx - bw / 2 + (k + 0.5) * (bw / 3)
+            c.line(sx - bh / 2, gy - bh / 2, sx + bh / 2, gy + bh / 2)
+    else:  # diamond sign
+        r = 4.2
+        path = c.beginPath()
+        path.moveTo(gx, gy + r)
+        path.lineTo(gx + r, gy)
+        path.lineTo(gx, gy - r)
+        path.lineTo(gx - r, gy)
+        path.close()
+        c.drawPath(path, fill=1, stroke=1)
 
 
 def _draw_info_panel(
@@ -253,6 +266,7 @@ def _draw_info_panel(
     job_type: Optional[str] = None,
     usa_ticket: Optional[str] = None,
     signs: Optional[list] = None,
+    other_kinds: Optional[set] = None,
 ) -> None:
     c.setFillColor(PANEL_BG)
     c.rect(x, y, w, h, fill=1, stroke=0)
@@ -309,8 +323,10 @@ def _draw_info_panel(
     # bottom rows land in the footer band and get painted over. Found by
     # actually rendering a sheet and looking at it, not by inspection —
     # see test_render_pdf.py for the regression.
-    legend_base = y + 24 + _LEGEND_ROW_PT * (len(_LEGEND_ITEMS) - 1)
-    legend_top = legend_base + _LEGEND_HEADER_PT + 10
+    legend_only = (other_kinds or set()) if signs else None
+    n_legend = len(_legend_items(legend_only))
+    legend_base = y + 24 + _LEGEND_ROW_PT * max(n_legend - 1, 0)
+    legend_top = (legend_base + _LEGEND_HEADER_PT + 10) if n_legend else y + 16
 
     if signs:
         # SIGNS list: number, code, wording, distance -- same sizes as the
@@ -320,9 +336,9 @@ def _draw_info_panel(
             rows = []
             for sg in signs:
                 head = f"{sg['n']}. {sg['code']}  {sg['where']}"
-                body = _wrap_text(sg["text"], w - 34, "Helvetica", size - 0.5, c) if sg["text"] else []
-                rows.append((head, body))
-            need = 14 + sum((size + 2) * (1 + len(b)) + 3 for _h, b in rows)
+                body = _wrap_text(sg["text"], w - 44, "Helvetica", size - 0.5, c) if sg["text"] else []
+                rows.append((head, body, sg))
+            need = 14 + sum((size + 2) * (1 + len(b)) + 3 for _h, b, _s in rows)
             if cursor_y - need > legend_top:
                 break
         cursor_y -= 6
@@ -330,21 +346,27 @@ def _draw_info_panel(
         c.setFillColor(PANEL_LABEL)
         c.drawString(text_x, cursor_y, "SIGNS (numbers match the map)")
         cursor_y -= size + 6
-        for head, body in rows:
+        for head, body, sg in rows:
             if cursor_y < legend_top:
                 break
+            # the sign's own symbol, as drawn on the map, beside its entry
+            _draw_glyph(c, text_x + 4.5, cursor_y + 2.8, "diamond", sg["fill"], sg["border"])
+            c.setLineWidth(0.75)
             c.setFont("Helvetica-Bold", size)
             c.setFillColor(colors.white)
-            c.drawString(text_x, cursor_y, head)
+            c.drawString(text_x + 14, cursor_y, head)
             cursor_y -= size + 2
             c.setFont("Helvetica", size - 0.5)
             c.setFillColor(PANEL_LABEL)
             for line in body:
-                c.drawString(text_x + 10, cursor_y, line)
+                c.drawString(text_x + 24, cursor_y, line)
                 cursor_y -= size + 2
             cursor_y -= 3
 
-    _draw_legend(c, text_x, legend_base)
+    if signs:
+        _draw_legend(c, text_x, legend_base, only=legend_only, title="OTHER SYMBOLS")
+    else:
+        _draw_legend(c, text_x, legend_base)
 
 
 def _work_area_distance_text(station: float, work_area: WorkArea) -> str:
@@ -374,7 +396,7 @@ def _number_signs(c: canvas.Canvas, targets: list[tuple], work_area: WorkArea) -
     the 5.5pt labels stacked along the bottom with long dashed leaders were
     too small to read -- the panel list is the same size as the legend)."""
     out, placed = [], []
-    for n, (px, py, code, label, station) in enumerate(sorted(targets, key=lambda t: t[4]), start=1):
+    for n, (px, py, code, label, station, fill, border) in enumerate(sorted(targets, key=lambda t: t[4]), start=1):
         bx, by = px + 7.5, py + 7.5
         # Signs at the work area sit on top of each other -- step a badge
         # around its sign until it clears the badges already drawn.
@@ -393,7 +415,7 @@ def _number_signs(c: canvas.Canvas, targets: list[tuple], work_area: WorkArea) -
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 6.5 if n < 10 else 5.5)
         c.drawCentredString(bx, by - 2.3, str(n))
-        out.append({"n": n, "code": code, "text": label or _SIGN_TEXT.get(code, ""),
+        out.append({"n": n, "code": code, "text": label or _SIGN_TEXT.get(code, ""), "fill": fill, "border": border,
                     "where": _work_area_distance_text(station, work_area)})
     return out
 
@@ -585,7 +607,7 @@ def _draw_map(
             path.close()
             c.drawPath(path, fill=1, stroke=1)
             if stack_labels and d.code:
-                label_targets.append((px, py, d.code, d.label or "", d.station_ft))
+                label_targets.append((px, py, d.code, d.label or "", d.station_ft, fill, border))
 
     if stack_labels:
         return _number_signs(c, label_targets, work_area)
@@ -718,6 +740,7 @@ def _build_sheet(
         sheet_label=sheet_label, geo_display=geo_display, road=road, scope=scope,
         ta_figure=ta_figure, permit_number=permit_number, job_number=job_number, warnings=warnings,
         job_type=job_type, usa_ticket=usa_ticket, signs=signs,
+        other_kinds={d.kind for d in devices if d.kind in ("cone", "flagger", "barricade")},
     )
     house_number_match = re.match(r"\s*(\d+)", raw_address)
     road_label = f"{house_number_match.group(1)} {road.name}" if house_number_match else road.name
